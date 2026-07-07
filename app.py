@@ -3,7 +3,6 @@ import os
 import re
 import secrets
 import logging
-import time
 import random
 import string
 from io import BytesIO
@@ -25,22 +24,11 @@ app.config["SESSION_COOKIE_SECURE"] = True     # 仅通过 HTTPS 传输 Cookie
 app.config["SESSION_COOKIE_NAME"] = "__Host-session"  # 前缀要求 Secure + Path=/
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)  # 会话30分钟超时
 
-# 隐藏 Server 头版本信息
-class _ServerHeaderMiddleware:
-    def __init__(self, app):
-        self.app = app
-    def __call__(self, environ, start_response):
-        def _replace_server(status, headers, exc_info=None):
-            new_headers = [(k, v) for k, v in headers if k.lower() != "server"]
-            new_headers.append(("Server", "Web Server"))
-            return start_response(status, new_headers, exc_info)
-        return self.app(environ, _replace_server)
-app.wsgi_app = _ServerHeaderMiddleware(app.wsgi_app)
-
 
 # 安全响应头
 @app.after_request
 def add_security_headers(response):
+    response.headers["Server"] = "Web Server"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-XSS-Protection"] = "1; mode=block"
@@ -337,4 +325,10 @@ if __name__ == "__main__":
     print("  访问地址: https://192.168.184.131:5000")
     print("  ⚠ 自签名证书，浏览器会提示不安全，点「高级」继续")
     print("=" * 60)
+
+    # 在 Werkzeug 层彻底覆盖 Server 头
+    from werkzeug.serving import WSGIRequestHandler
+    WSGIRequestHandler.server_version = "Web Server"
+    WSGIRequestHandler.sys_version = ""
+
     app.run(host="0.0.0.0", port=5000, ssl_context=("ssl.crt", "ssl.key"))
