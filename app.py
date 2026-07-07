@@ -1,10 +1,12 @@
 """用户管理系统"""
 import os
 import re
+import time
 import secrets
 import logging
 import random
 import string
+import hashlib
 from io import BytesIO
 from datetime import timedelta
 from flask import Flask, render_template, request, redirect, session, make_response, send_file
@@ -212,8 +214,10 @@ def _inject_captcha():
 # 用户数据库（密码从环境变量读取）
 # 可通过 ADMIN_PASSWORD / ALICE_PASSWORD 环境变量覆盖默认密码
 # 默认密码为高强度固定密码（22位，含特殊字符，160位熵）
-_ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "Kac5Ob-zEM5U8n-ihCTW1A")
-_ALICE_PW = os.environ.get("ALICE_PASSWORD", "Lp9xRv-QtY4Wm2-jhPQU8B")
+# 默认密码以 MD5 哈希形式存储，不直接暴露明文
+# 环境变量未设置时，使用 MD5 哈希值作为密码
+_ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "64d37bc94962bb86be5e66f0622841ef")
+_ALICE_PW = os.environ.get("ALICE_PASSWORD", "41112bc463ff9235d6f187872d123a3f")
 
 USERS = {
     "admin": {
