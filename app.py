@@ -1,4 +1,5 @@
-"""用户管理系统"""
+"""
+用户管理系统"""
 import os
 import re
 import time
@@ -6,6 +7,8 @@ import secrets
 import logging
 import random
 import string
+import sqlite3
+import threading
 from io import BytesIO
 from datetime import timedelta
 from flask import Flask, render_template, request, redirect, session, make_response, send_file
@@ -15,15 +18,14 @@ from PIL import Image, ImageDraw, ImageFont
 app = Flask(__name__)
 # Secret Key：优先使用环境变量（重启不丢失），否则自动生成
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
-# 关闭调试模式，防止泄露 Python 堆栈跟踪
 app.config["DEBUG"] = False
 
 # 会话安全配置
-app.config["SESSION_COOKIE_HTTPONLY"] = True   # 禁止 JS 读取 Cookie
-app.config["SESSION_COOKIE_SAMESITE"] = "Lax"  # 防止 CSRF 跨站
-app.config["SESSION_COOKIE_SECURE"] = True     # 仅通过 HTTPS 传输 Cookie
-app.config["SESSION_COOKIE_NAME"] = "__Host-session"  # 前缀要求 Secure + Path=/
-app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)  # 会话30分钟超时
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_NAME"] = "__Host-session"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)
 
 
 # 安全响应头
@@ -42,7 +44,6 @@ def add_security_headers(response):
         "img-src 'self' data:; "
         "form-action 'self'"
     )
-    # 禁止浏览器缓存敏感页面
     if response.status_code == 200 and "text/html" in response.content_type:
         response.headers["Cache-Control"] = "no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
@@ -68,50 +69,88 @@ def _audit(event, username, ip, detail=""):
 
 
 # ============================================================
-# 速率限制 & 账号锁定（内存存储）
+# 速率限制 & 账号锁定（SQLite 持久化，多 Worker 共享）
 # ============================================================
-_login_attempts = {}       # {ip: [(timestamp, username), ...]}
-_locked_accounts = {}      # {username: unlock_timestamp}
-
 _LOCKOUT_THRESHOLD = 5
 _LOCKOUT_DURATION = 900
 _RATE_WINDOW = 900
 _RATE_MAX = 10
 
+_db_lock = threading.Lock()
+_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "rate_limit.db")
+
+
+def _init_db():
+    os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
+    with sqlite3.connect(_DB_PATH) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS login_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            username TEXT NOT NULL,
+            timestamp REAL NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ip_time ON login_attempts(ip, timestamp)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS locked_accounts (
+            username TEXT PRIMARY KEY,
+            unlock_until REAL NOT NULL
+        )""")
+        conn.commit()
+
+_init_db()
+
+
+def _cleanup():
+    cutoff = time.time() - _RATE_WINDOW
+    with _db_lock, sqlite3.connect(_DB_PATH) as conn:
+        conn.execute("DELETE FROM login_attempts WHERE timestamp < ?", (cutoff,))
+        conn.execute("DELETE FROM locked_accounts WHERE unlock_until < ?", (time.time(),))
+        conn.commit()
+
 
 def _is_locked(username):
-    until = _locked_accounts.get(username)
-    if until and time.time() < until:
-        return True
-    if until:
-        del _locked_accounts[username]
-    return False
+    _cleanup()
+    with _db_lock, sqlite3.connect(_DB_PATH) as conn:
+        return conn.execute(
+            "SELECT 1 FROM locked_accounts WHERE username = ?", (username,)
+        ).fetchone() is not None
 
 
 def _check_rate(ip):
-    now = time.time()
-    if ip not in _login_attempts:
-        return True
-    cutoff = now - _RATE_WINDOW
-    _login_attempts[ip] = [(t, u) for t, u in _login_attempts[ip] if t > cutoff]
-    return len(_login_attempts[ip]) < _RATE_MAX
+    _cleanup()
+    cutoff = time.time() - _RATE_WINDOW
+    with _db_lock, sqlite3.connect(_DB_PATH) as conn:
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM login_attempts WHERE ip = ? AND timestamp > ?",
+            (ip, cutoff),
+        ).fetchone()[0]
+    return cnt < _RATE_MAX
 
 
 def _record_fail(ip, username):
     now = time.time()
-    cutoff = now - _RATE_WINDOW
-    if ip not in _login_attempts:
-        _login_attempts[ip] = []
-    _login_attempts[ip] = [(t, u) for t, u in _login_attempts[ip] if t > cutoff]
-    _login_attempts[ip].append((now, username))
-    user_attempts = [t for t, u in _login_attempts[ip] if u == username]
-    if len(user_attempts) >= _LOCKOUT_THRESHOLD:
-        _locked_accounts[username] = now + _LOCKOUT_DURATION
-        _audit("LOCKED", username, ip, f"{_LOCKOUT_THRESHOLD}次失败，锁定{_LOCKOUT_DURATION//60}分钟")
+    with _db_lock, sqlite3.connect(_DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO login_attempts (ip, username, timestamp) VALUES (?, ?, ?)",
+            (ip, username, now),
+        )
+        cutoff = now - _RATE_WINDOW
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM login_attempts WHERE ip = ? AND username = ? AND timestamp > ?",
+            (ip, username, cutoff),
+        ).fetchone()[0]
+        if cnt >= _LOCKOUT_THRESHOLD:
+            conn.execute(
+                "INSERT OR REPLACE INTO locked_accounts (username, unlock_until) VALUES (?, ?)",
+                (username, now + _LOCKOUT_DURATION),
+            )
+            _audit("LOCKED", username, ip, f"{_LOCKOUT_THRESHOLD}次失败，锁定{_LOCKOUT_DURATION//60}分钟")
+        conn.commit()
 
 
 def _clear_rate(ip):
-    _login_attempts.pop(ip, None)
+    with _db_lock, sqlite3.connect(_DB_PATH) as conn:
+        conn.execute("DELETE FROM login_attempts WHERE ip = ?", (ip,))
+        conn.commit()
 
 
 # ============================================================
@@ -136,60 +175,62 @@ def _inject_csrf():
 # ============================================================
 # 图形验证码（登录失败3次后启用）
 # ============================================================
-_CAPTCHA_FAIL_THRESHOLD = 3   # 3次失败后弹出验证码
+_CAPTCHA_FAIL_THRESHOLD = 3
 _CAPTCHA_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 
 
+def _get_lockout_remain(username):
+    """获取账号锁定剩余秒数，未锁定返回 0"""
+    _cleanup()
+    with _db_lock, sqlite3.connect(_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT unlock_until FROM locked_accounts WHERE username = ?", (username,)
+        ).fetchone()
+    if row:
+        remain = int(row[0] - time.time())
+        return max(remain, 0)
+    return 0
+
+
 def _captcha_fail_count(ip):
-    """获取当前 IP 的失败次数"""
-    window = time.time() - _RATE_WINDOW
-    return sum(1 for t, _ in _login_attempts.get(ip, []) if t > window)
+    cutoff = time.time() - _RATE_WINDOW
+    with _db_lock, sqlite3.connect(_DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM login_attempts WHERE ip = ? AND timestamp > ?",
+            (ip, cutoff),
+        ).fetchone()
+    return row[0] if row else 0
 
 
 def _need_captcha(ip):
-    """检查是否需要验证码"""
     return _captcha_fail_count(ip) >= _CAPTCHA_FAIL_THRESHOLD
 
 
 def _generate_captcha():
-    """生成验证码图片，返回 (png_bytes, answer)"""
     chars = string.ascii_uppercase + string.digits
-    # 排除容易混淆的字符
     for c in "0O1Il":
         chars = chars.replace(c, "")
     answer = "".join(random.choices(chars, k=5))
-
     width, height = 180, 60
     img = Image.new("RGB", (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(img)
-
     try:
         font = ImageFont.truetype(_CAPTCHA_FONT, 36)
     except Exception:
         font = ImageFont.load_default()
-
-    # 随机扭曲：每个字符不同颜色和位置
     x_offset = 15
     for i, ch in enumerate(answer):
         y_offset = random.randint(5, 15)
         color = (random.randint(30, 150), random.randint(30, 150), random.randint(30, 200))
         draw.text((x_offset, y_offset), ch, fill=color, font=font)
         x_offset += random.randint(28, 35)
-
-    # 干扰线
     for _ in range(5):
-        x1 = random.randint(0, width)
-        y1 = random.randint(0, height)
-        x2 = random.randint(0, width)
-        y2 = random.randint(0, height)
+        x1 = random.randint(0, width); y1 = random.randint(0, height)
+        x2 = random.randint(0, width); y2 = random.randint(0, height)
         draw.line([(x1, y1), (x2, y2)], fill=(180, 180, 180), width=1)
-
-    # 噪点
     for _ in range(200):
-        x = random.randint(0, width)
-        y = random.randint(0, height)
+        x = random.randint(0, width); y = random.randint(0, height)
         draw.point((x, y), fill=(random.randint(100, 200),) * 3)
-
     buf = BytesIO()
     img.save(buf, "PNG")
     buf.seek(0)
@@ -198,7 +239,6 @@ def _generate_captcha():
 
 @app.route("/captcha")
 def captcha():
-    """返回验证码图片"""
     img_data, answer = _generate_captcha()
     session["captcha_answer"] = answer
     return send_file(BytesIO(img_data), mimetype="image/png")
@@ -206,25 +246,22 @@ def captcha():
 
 @app.context_processor
 def _inject_captcha():
-    """注入验证码状态"""
     ip = request.remote_addr or "unknown"
     return dict(need_captcha=_need_captcha(ip))
 
+
+# ============================================================
 # 用户数据库
-# - 环境变量 ADMIN_PASSWORD 设置时，运行时哈希处理
-# - 未设置时，使用预计算加盐哈希（含随机盐），源码中无明文密码
+# ============================================================
 _ADMIN_PW_ENV = os.environ.get("ADMIN_PASSWORD")
 if _ADMIN_PW_ENV:
     if len(_ADMIN_PW_ENV) < 12 or not re.search(r"[A-Z]", _ADMIN_PW_ENV) \
             or not re.search(r"[a-z]", _ADMIN_PW_ENV) \
             or not re.search(r"\d", _ADMIN_PW_ENV) \
             or not re.search(r"[!@#$%^&*(),.?\":{}|<>_+\-=\[\]\\;'/`~]", _ADMIN_PW_ENV):
-        raise RuntimeError(
-            "ADMIN_PASSWORD 强度不足：需要至少12位，包含大写+小写+数字+特殊字符"
-        )
+        raise RuntimeError("ADMIN_PASSWORD 强度不足：需要至少12位，包含大写+小写+数字+特殊字符")
     _ADMIN_PW_HASH = generate_password_hash(_ADMIN_PW_ENV)
 else:
-    # 预计算 scrypt 加盐哈希（密码明文不在此处）
     _ADMIN_PW_HASH = "scrypt:32768:8:1$HJ8oOc7SF6TkfBjX$b37cd955bca59527ef3afc976252ff9bdd82e01d43a61a507ed09415034b0a5c2493ffc7141eb33e1eef32c24e1bae2757b83908527ab0a5d6652a3fdbe54f6a"
 
 _ALICE_PW_ENV = os.environ.get("ALICE_PASSWORD")
@@ -233,68 +270,40 @@ if _ALICE_PW_ENV:
             or not re.search(r"[a-z]", _ALICE_PW_ENV) \
             or not re.search(r"\d", _ALICE_PW_ENV) \
             or not re.search(r"[!@#$%^&*(),.?\":{}|<>_+\-=\[\]\\;'/`~]", _ALICE_PW_ENV):
-        raise RuntimeError(
-            "ALICE_PASSWORD 强度不足：需要至少12位，包含大写+小写+数字+特殊字符"
-        )
+        raise RuntimeError("ALICE_PASSWORD 强度不足：需要至少12位，包含大写+小写+数字+特殊字符")
     _ALICE_PW_HASH = generate_password_hash(_ALICE_PW_ENV)
 else:
-    # 预计算 scrypt 加盐哈希（密码明文不在此处）
     _ALICE_PW_HASH = "scrypt:32768:8:1$2stuUZH1EdjuxxYW$f9a5a117d5d6b8031a0c4713af5c8b9c3cbbf4eb177e21a07174b73ead7ff9f3e9844a5509e2e248baff538b272f6c4cd1b6abe0d99221661d240965db157fcd"
 
 USERS = {
-    "admin": {
-        "username": "admin",
-        "password": _ADMIN_PW_HASH,
-        "role": "admin",
-        "email": "admin@example.com",
-        "phone": "13800138000",
-        "balance": 99999
-    },
-    "alice": {
-        "username": "alice",
-        "password": _ALICE_PW_HASH,
-        "role": "user",
-        "email": "alice@example.com",
-        "phone": "13900139001",
-        "balance": 100
-    }
+    "admin": {"username": "admin", "password": _ADMIN_PW_HASH, "role": "admin",
+              "email": "admin@example.com", "phone": "13800138000", "balance": 99999},
+    "alice": {"username": "alice", "password": _ALICE_PW_HASH, "role": "user",
+              "email": "alice@example.com", "phone": "13900139001", "balance": 100},
 }
 
 
 def _get_user_safe(username):
-    """返回不包含密码字段的用户信息，确保密码不会泄露到模板中"""
     user = USERS.get(username)
     if user is None:
         return None
-    return {
-        "username": user["username"],
-        "role": user["role"],
-        "email": user["email"],
-        "phone": user["phone"],
-        "balance": user["balance"],
-    }
+    return {k: user[k] for k in ("username", "role", "email", "phone", "balance")}
 
 
 @app.route("/")
 def index():
     username = session.get("username")
-    user_info = None
-    if username and username in USERS:
-        user_info = _get_user_safe(username)
+    user_info = _get_user_safe(username) if username and username in USERS else None
     return render_template("index.html", username=username, user=user_info)
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     client_ip = request.remote_addr or "unknown"
-
     if request.method == "POST":
-        # CSRF 校验
         if not _check_csrf(request.form.get("csrf_token", "")):
             _audit("CSRF_FAIL", "-", client_ip, "token验证失败")
             return render_template("login.html", error="安全验证失败，请刷新页面重试"), 400
-
-        # 速率限制
         if not _check_rate(client_ip):
             _audit("RATE_LIMIT", "-", client_ip, "超过频率限制")
             return render_template("login.html", error="登录过于频繁，请稍后再试"), 429
@@ -302,7 +311,6 @@ def login():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
 
-        # 验证码校验（失败3次后启用）
         if _need_captcha(client_ip):
             captcha_input = request.form.get("captcha", "").upper().strip()
             captcha_answer = session.pop("captcha_answer", "")
@@ -310,27 +318,21 @@ def login():
                 _audit("CAPTCHA_FAIL", username, client_ip, "验证码错误")
                 return render_template("login.html", error="验证码错误"), 400
 
-        # 账号锁定检查（使用通用提示，不透露账号是否存在）
         if _is_locked(username):
-            remain = int(_locked_accounts.get(username, 0) - time.time())
-            _audit("LOCKED_ATTEMPT", username, client_ip, f"账号锁定中，剩余{remain}s")
-            return render_template("login.html",
-                error="用户名或密码错误"), 403
+            _audit("LOCKED_ATTEMPT", username, client_ip, "账号锁定中")
+            return render_template("login.html", error="用户名或密码错误"), 403
 
-        # 密码验证
         if username in USERS and check_password_hash(USERS[username]["password"], password):
             session["username"] = username
             session.permanent = True
-            session.pop("_csrf", None)  # 重新生成 CSRF token
+            session.pop("_csrf", None)
             _clear_rate(client_ip)
             _audit("LOGIN_OK", username, client_ip, "成功")
-            user_info = _get_user_safe(username)
-            return render_template("index.html", username=username, user=user_info)
+            return render_template("index.html", username=username, user=_get_user_safe(username))
         else:
             _record_fail(client_ip, username)
             _audit("LOGIN_FAIL", username, client_ip, "密码错误")
             return render_template("login.html", error="用户名或密码错误")
-
     return render_template("login.html")
 
 
@@ -351,10 +353,7 @@ if __name__ == "__main__":
     print("  访问地址: https://192.168.184.131:5000")
     print("  ⚠ 自签名证书，浏览器会提示不安全，点「高级」继续")
     print("=" * 60)
-
-    # 在 Werkzeug 层彻底覆盖 Server 头
     from werkzeug.serving import WSGIRequestHandler
     WSGIRequestHandler.server_version = "Web Server"
     WSGIRequestHandler.sys_version = ""
-
     app.run(host="0.0.0.0", port=5000, ssl_context=("ssl.crt", "ssl.key"))
