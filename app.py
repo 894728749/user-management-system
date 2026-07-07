@@ -6,7 +6,6 @@ import secrets
 import logging
 import random
 import string
-import hashlib
 from io import BytesIO
 from datetime import timedelta
 from flask import Flask, render_template, request, redirect, session, make_response, send_file
@@ -211,18 +210,27 @@ def _inject_captcha():
     ip = request.remote_addr or "unknown"
     return dict(need_captcha=_need_captcha(ip))
 
-# 用户数据库（密码从环境变量读取）
-# 可通过 ADMIN_PASSWORD / ALICE_PASSWORD 环境变量覆盖默认密码
-# 默认密码为高强度固定密码（22位，含特殊字符，160位熵）
-# 默认密码以 MD5 哈希形式存储，不直接暴露明文
-# 环境变量未设置时，使用 MD5 哈希值作为密码
-_ADMIN_PW = os.environ.get("ADMIN_PASSWORD", "64d37bc94962bb86be5e66f0622841ef")
-_ALICE_PW = os.environ.get("ALICE_PASSWORD", "41112bc463ff9235d6f187872d123a3f")
+# 用户数据库
+# - 环境变量 ADMIN_PASSWORD 设置时，运行时哈希处理
+# - 未设置时，使用预计算加盐哈希（含随机盐），源码中无明文密码
+_ADMIN_PW_ENV = os.environ.get("ADMIN_PASSWORD")
+if _ADMIN_PW_ENV:
+    _ADMIN_PW_HASH = generate_password_hash(_ADMIN_PW_ENV)
+else:
+    # 预计算 scrypt 加盐哈希（密码明文不在此处）
+    _ADMIN_PW_HASH = "scrypt:32768:8:1$HJ8oOc7SF6TkfBjX$b37cd955bca59527ef3afc976252ff9bdd82e01d43a61a507ed09415034b0a5c2493ffc7141eb33e1eef32c24e1bae2757b83908527ab0a5d6652a3fdbe54f6a"
+
+_ALICE_PW_ENV = os.environ.get("ALICE_PASSWORD")
+if _ALICE_PW_ENV:
+    _ALICE_PW_HASH = generate_password_hash(_ALICE_PW_ENV)
+else:
+    # 预计算 scrypt 加盐哈希（密码明文不在此处）
+    _ALICE_PW_HASH = "scrypt:32768:8:1$2stuUZH1EdjuxxYW$f9a5a117d5d6b8031a0c4713af5c8b9c3cbbf4eb177e21a07174b73ead7ff9f3e9844a5509e2e248baff538b272f6c4cd1b6abe0d99221661d240965db157fcd"
 
 USERS = {
     "admin": {
         "username": "admin",
-        "password": generate_password_hash(_ADMIN_PW),
+        "password": _ADMIN_PW_HASH,
         "role": "admin",
         "email": "admin@example.com",
         "phone": "13800138000",
@@ -230,7 +238,7 @@ USERS = {
     },
     "alice": {
         "username": "alice",
-        "password": generate_password_hash(_ALICE_PW),
+        "password": _ALICE_PW_HASH,
         "role": "user",
         "email": "alice@example.com",
         "phone": "13900139001",
