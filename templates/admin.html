@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>管理后台</h2>
+    <div class="admin-badge">管理员专享</div>
+    <p>欢迎您，{{ username }}！本页面仅 <strong>admin</strong> 角色可访问。</p>
+
+    <h3>系统信息</h3>
+    <ul class="info-list">
+        <li><span class="label">当前用户：</span>{{ user.username }}</li>
+        <li><span class="label">角色：</span><span class="role-admin">{{ user.role }}</span></li>
+        <li><span class="label">邮箱：</span>{{ user.email }}</li>
+    </ul>
+
+    <a href="/" class="btn btn-primary" style="width:auto;margin-right:8px;">返回首页</a>
+    <a href="/logout" class="btn btn-danger" style="width:auto;">退出登录</a>
+</div>
+{% endblock %}

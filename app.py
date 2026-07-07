@@ -9,6 +9,7 @@ import random
 import string
 import sqlite3
 import threading
+import functools
 from io import BytesIO
 from datetime import timedelta
 from flask import Flask, render_template, request, redirect, session, make_response, send_file
@@ -290,6 +291,31 @@ def _get_user_safe(username):
     return {k: user[k] for k in ("username", "role", "email", "phone", "balance")}
 
 
+def login_required(f):
+    """要求登录的装饰器"""
+    @functools.wraps(f)
+    def wrapper(*a, **kw):
+        if not session.get("username"):
+            return redirect("/login")
+        return f(*a, **kw)
+    return wrapper
+
+
+def admin_required(f):
+    """要求管理员权限的装饰器"""
+    @functools.wraps(f)
+    def wrapper(*a, **kw):
+        username = session.get("username")
+        if not username:
+            return redirect("/login")
+        user = USERS.get(username)
+        if not user or user.get("role") != "admin":
+            return render_template("index.html", username=username,
+                                   user=_get_user_safe(username), error="无权限访问"), 403
+        return f(*a, **kw)
+    return wrapper
+
+
 @app.route("/")
 def index():
     username = session.get("username")
@@ -342,6 +368,16 @@ def logout():
     session.clear()
     _audit("LOGOUT", username, request.remote_addr or "unknown", "登出")
     return redirect("/")
+
+
+@app.route("/admin")
+@login_required
+@admin_required
+def admin_panel():
+    """管理后台（仅 admin 角色可访问）"""
+    username = session.get("username")
+    user_info = _get_user_safe(username)
+    return render_template("admin.html", username=username, user=user_info)
 
 
 if __name__ == "__main__":

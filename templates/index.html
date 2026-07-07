@@ -3,6 +3,9 @@
 {% if username and user %}
 <div class="card">
     <h2>欢迎回来，{{ username }}！</h2>
+    {% if error %}
+    <div class="error-msg">{{ error }}</div>
+    {% endif %}
     <h3>用户信息</h3>
     <ul class="info-list">
         <li><span class="label">用户名：</span>{{ user.username }}</li>
@@ -12,7 +15,10 @@
         <li><span class="label">角色：</span>{{ user.role }}</li>
         <li><span class="label">余额：</span>{{ user.balance }}</li>
     </ul>
-    <a href="/logout" class="btn btn-danger">退出登录</a>
+    {% if user.role == "admin" %}
+    <a href="/admin" class="btn btn-primary" style="width:auto;margin-right:8px;">管理后台</a>
+    {% endif %}
+    <a href="/logout" class="btn btn-danger" style="width:auto;">退出登录</a>
 </div>
 {% else %}
 <div class="card">
