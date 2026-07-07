@@ -18,27 +18,25 @@
 ## 快速启动
 
 ```bash
-# 安装依赖
+# 1. 设置管理员密码（必须）
+export ADMIN_PASSWORD="your-strong-password"
+export ALICE_PASSWORD="your-strong-password"
+
+# 2. 安装依赖
 pip install flask werkzeug pillow
 
-# 生成 SSL 证书
+# 3. 生成 SSL 证书
 openssl req -x509 -newkey rsa:2048 \
   -keyout ssl.key -out ssl.crt \
   -days 365 -nodes -subj "/CN=localhost"
 
-# 启动服务
+# 4. 启动服务
 python3 app.py
 ```
 
 访问 **`https://localhost:5000`**
 
-首次启动会自动生成强密码并打印在控制台。也可通过环境变量预设：
-
-```bash
-export ADMIN_PASSWORD="your-admin-password"
-export ALICE_PASSWORD="your-alice-password"
-python3 app.py
-```
+> ⚠ 密码必须通过环境变量 `ADMIN_PASSWORD` 和 `ALICE_PASSWORD` 设置，未设置时服务拒绝启动。
 
 ## 安全设计
 
