@@ -13,8 +13,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
-# 使用随机密钥替代硬编码弱密钥，每次重启都会重新生成
-app.secret_key = secrets.token_hex(32)
+# Secret Key：优先使用环境变量（重启不丢失），否则自动生成
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 # 关闭调试模式，防止泄露 Python 堆栈跟踪
 app.config["DEBUG"] = False
 
@@ -37,7 +37,7 @@ def add_security_headers(response):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
+        "style-src 'self'; "
         "script-src 'self'; "
         "img-src 'self' data:; "
         "form-action 'self'"
@@ -215,6 +215,13 @@ def _inject_captcha():
 # - 未设置时，使用预计算加盐哈希（含随机盐），源码中无明文密码
 _ADMIN_PW_ENV = os.environ.get("ADMIN_PASSWORD")
 if _ADMIN_PW_ENV:
+    if len(_ADMIN_PW_ENV) < 12 or not re.search(r"[A-Z]", _ADMIN_PW_ENV) \
+            or not re.search(r"[a-z]", _ADMIN_PW_ENV) \
+            or not re.search(r"\d", _ADMIN_PW_ENV) \
+            or not re.search(r"[!@#$%^&*(),.?\":{}|<>_+\-=\[\]\\;'/`~]", _ADMIN_PW_ENV):
+        raise RuntimeError(
+            "ADMIN_PASSWORD 强度不足：需要至少12位，包含大写+小写+数字+特殊字符"
+        )
     _ADMIN_PW_HASH = generate_password_hash(_ADMIN_PW_ENV)
 else:
     # 预计算 scrypt 加盐哈希（密码明文不在此处）
@@ -222,6 +229,13 @@ else:
 
 _ALICE_PW_ENV = os.environ.get("ALICE_PASSWORD")
 if _ALICE_PW_ENV:
+    if len(_ALICE_PW_ENV) < 12 or not re.search(r"[A-Z]", _ALICE_PW_ENV) \
+            or not re.search(r"[a-z]", _ALICE_PW_ENV) \
+            or not re.search(r"\d", _ALICE_PW_ENV) \
+            or not re.search(r"[!@#$%^&*(),.?\":{}|<>_+\-=\[\]\\;'/`~]", _ALICE_PW_ENV):
+        raise RuntimeError(
+            "ALICE_PASSWORD 强度不足：需要至少12位，包含大写+小写+数字+特殊字符"
+        )
     _ALICE_PW_HASH = generate_password_hash(_ALICE_PW_ENV)
 else:
     # 预计算 scrypt 加盐哈希（密码明文不在此处）
