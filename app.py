@@ -413,7 +413,7 @@ def register():
             conn.commit()
             return render_template("login.html", error="注册成功，请登录")
         except Exception as e:
-            return render_template("register.html", error=f"注册失败：{e}")
+            return render_template("register.html", error="注册失败，用户名可能已存在")
         finally:
             conn.close()
 
