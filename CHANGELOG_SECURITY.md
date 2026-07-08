@@ -60,6 +60,48 @@
 | Cache-Control | `no-store, max-age=0` | ✅ |
 | Server | `Web Server`（隐藏版本） | ✅ |
 
+---
+
+## SQL 注入修复
+
+| # | 位置 | 漏洞类型 | 修复方式 | 状态 |
+|:--:|------|:--------:|---------|:----:|
+| ① | 搜索 `/search` | SELECT f-string 拼接 | 改为参数化查询 `?` 占位符 | ✅ |
+| ② | 注册 `/register` | INSERT f-string 拼接 | 改为参数化查询 `?` 占位符 | ✅ |
+
+### 修复详情
+
+**搜索（参数化查询）：**
+
+```python
+# 修改前（存在注入）
+sql = f"SELECT id, username, email, phone FROM users WHERE username LIKE '%{keyword}%' OR email LIKE '%{keyword}%'"
+
+# 修改后（参数化）
+like_pattern = f"%{keyword}%"
+sql = "SELECT id, username, email, phone FROM users WHERE username LIKE ? OR email LIKE ?"
+conn.execute(sql, (like_pattern, like_pattern))
+```
+
+**注册（参数化查询）：**
+
+```python
+# 修改前（存在注入）
+sql = f"INSERT INTO users (username, password, email, phone) VALUES ('{username}', '{password}', '{email}', '{phone}')"
+
+# 修改后（参数化）
+sql = "INSERT INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)"
+conn.execute(sql, (username, password, email, phone))
+```
+
+### 验证结果
+
+- 搜索 UNION 注入 → 返回"无搜索结果" ✅
+- 搜索 OR 注入 → 返回"无搜索结果" ✅
+- 注册注入尝试 → 提示"注册失败" ✅
+- 正常搜索/注册 → 功能正常 ✅
+- 原有登录功能 → 不受影响 ✅
+
 ## Session 安全
 
 | 配置项 | 值 | 状态 |
