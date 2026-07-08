@@ -7,6 +7,7 @@ import secrets
 import logging
 import random
 import string
+import hashlib
 import sqlite3
 import threading
 import functools
@@ -252,34 +253,17 @@ def _inject_captcha():
 
 
 # ============================================================
-# 用户数据库
+# 用户数据库（密码以 MD5 哈希形式存储）
 # ============================================================
-_ADMIN_PW_ENV = os.environ.get("ADMIN_PASSWORD")
-if _ADMIN_PW_ENV:
-    if len(_ADMIN_PW_ENV) < 12 or not re.search(r"[A-Z]", _ADMIN_PW_ENV) \
-            or not re.search(r"[a-z]", _ADMIN_PW_ENV) \
-            or not re.search(r"\d", _ADMIN_PW_ENV) \
-            or not re.search(r"[!@#$%^&*(),.?\":{}|<>_+\-=\[\]\\;'/`~]", _ADMIN_PW_ENV):
-        raise RuntimeError("ADMIN_PASSWORD 强度不足：需要至少12位，包含大写+小写+数字+特殊字符")
-    _ADMIN_PW_HASH = generate_password_hash(_ADMIN_PW_ENV)
-else:
-    _ADMIN_PW_HASH = "scrypt:32768:8:1$HJ8oOc7SF6TkfBjX$b37cd955bca59527ef3afc976252ff9bdd82e01d43a61a507ed09415034b0a5c2493ffc7141eb33e1eef32c24e1bae2757b83908527ab0a5d6652a3fdbe54f6a"
-
-_ALICE_PW_ENV = os.environ.get("ALICE_PASSWORD")
-if _ALICE_PW_ENV:
-    if len(_ALICE_PW_ENV) < 12 or not re.search(r"[A-Z]", _ALICE_PW_ENV) \
-            or not re.search(r"[a-z]", _ALICE_PW_ENV) \
-            or not re.search(r"\d", _ALICE_PW_ENV) \
-            or not re.search(r"[!@#$%^&*(),.?\":{}|<>_+\-=\[\]\\;'/`~]", _ALICE_PW_ENV):
-        raise RuntimeError("ALICE_PASSWORD 强度不足：需要至少12位，包含大写+小写+数字+特殊字符")
-    _ALICE_PW_HASH = generate_password_hash(_ALICE_PW_ENV)
-else:
-    _ALICE_PW_HASH = "scrypt:32768:8:1$2stuUZH1EdjuxxYW$f9a5a117d5d6b8031a0c4713af5c8b9c3cbbf4eb177e21a07174b73ead7ff9f3e9844a5509e2e248baff538b272f6c4cd1b6abe0d99221661d240965db157fcd"
+# 环境变量 ADMIN_PASSWORD 应存储密码明文的 MD5 哈希值
+# 例：export ADMIN_PASSWORD=$(echo -n "你的密码" | md5sum | cut -d' ' -f1)
+_ADMIN_MD5 = os.environ.get("ADMIN_PASSWORD", "64d37bc94962bb86be5e66f0622841ef")
+_ALICE_MD5 = os.environ.get("ALICE_PASSWORD", "41112bc463ff9235d6f187872d123a3f")
 
 USERS = {
-    "admin": {"username": "admin", "password": _ADMIN_PW_HASH, "role": "admin",
+    "admin": {"username": "admin", "password": _ADMIN_MD5, "role": "admin",
               "email": "admin@example.com", "phone": "13800138000", "balance": 99999},
-    "alice": {"username": "alice", "password": _ALICE_PW_HASH, "role": "user",
+    "alice": {"username": "alice", "password": _ALICE_MD5, "role": "user",
               "email": "alice@example.com", "phone": "13900139001", "balance": 100},
 }
 
@@ -348,7 +332,7 @@ def login():
             _audit("LOCKED_ATTEMPT", username, client_ip, "账号锁定中")
             return render_template("login.html", error="用户名或密码错误"), 403
 
-        if username in USERS and check_password_hash(USERS[username]["password"], password):
+        if username in USERS and hashlib.md5(password.encode()).hexdigest() == USERS[username]["password"]:
             session["username"] = username
             session.permanent = True
             session.pop("_csrf", None)
@@ -378,6 +362,87 @@ def admin_panel():
     username = session.get("username")
     user_info = _get_user_safe(username)
     return render_template("admin.html", username=username, user=user_info)
+
+
+# ============================================================
+# 用户数据库（SQLite — 注册/搜索功能）
+# ============================================================
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(_DATA_DIR, exist_ok=True)
+_USERS_DB = os.path.join(_DATA_DIR, "users.db")
+
+
+def init_users_db():
+    """初始化用户数据库，创建表并插入默认用户"""
+    conn = sqlite3.connect(_USERS_DB)
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        email TEXT,
+        phone TEXT
+    )""")
+    # 插入默认用户（使用明文密码，与注册逻辑一致）
+    conn.execute("INSERT OR IGNORE INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)",
+                 ("admin", "admin123", "admin@example.com", "13800138000"))
+    conn.execute("INSERT OR IGNORE INTO users (username, password, email, phone) VALUES (?, ?, ?, ?)",
+                 ("alice", "alice2025", "alice@example.com", "13900139001"))
+    conn.commit()
+    conn.close()
+
+
+init_users_db()
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    """用户注册"""
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        email = request.form.get("email", "").strip()
+        phone = request.form.get("phone", "").strip()
+
+        # 使用 f-string 拼接 SQL（注意：存在 SQL 注入风险，仅用于教学演示）
+        sql = f"INSERT INTO users (username, password, email, phone) VALUES ('{username}', '{password}', '{email}', '{phone}')"
+        print(f"[REGISTER SQL] {sql}")
+
+        conn = sqlite3.connect(_USERS_DB)
+        try:
+            conn.execute(sql)
+            conn.commit()
+            return render_template("login.html", error="注册成功，请登录")
+        except Exception as e:
+            return render_template("register.html", error=f"注册失败：{e}")
+        finally:
+            conn.close()
+
+    return render_template("register.html")
+
+
+@app.route("/search")
+def search():
+    """搜索用户（SQL 拼接演示）"""
+    keyword = request.args.get("keyword", "")
+    results = []
+
+    if keyword:
+        sql = f"SELECT id, username, email, phone FROM users WHERE username LIKE '%{keyword}%' OR email LIKE '%{keyword}%'"
+        print(f"[SEARCH SQL] {sql}")
+
+        conn = sqlite3.connect(_USERS_DB)
+        try:
+            cursor = conn.execute(sql)
+            results = cursor.fetchall()
+        except Exception as e:
+            print(f"[SEARCH ERROR] {e}")
+        finally:
+            conn.close()
+
+    username = session.get("username")
+    user_info = _get_user_safe(username) if username and username in USERS else None
+    return render_template("index.html", username=username, user=user_info,
+                           search_results=results, search_keyword=keyword)
 
 
 if __name__ == "__main__":
