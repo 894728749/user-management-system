@@ -29,6 +29,11 @@ app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_NAME"] = "__Host-session"
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)
 
+# 文件上传配置
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB
+_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "uploads")
+os.makedirs(_UPLOAD_DIR, exist_ok=True)
+
 
 # 安全响应头
 @app.after_request
@@ -445,6 +450,28 @@ def search():
     user_info = _get_user_safe(username) if username and username in USERS else None
     return render_template("index.html", username=username, user=user_info,
                            search_results=results, search_keyword=keyword)
+
+
+@app.route("/upload", methods=["GET", "POST"])
+@login_required
+def upload_file():
+    """用户头像上传"""
+    username = session.get("username")
+    user_info = _get_user_safe(username) if username and username in USERS else None
+    result = {}
+
+    if request.method == "POST":
+        file = request.files.get("file")
+        if file and file.filename:
+            filename = file.filename
+            save_path = os.path.join(_UPLOAD_DIR, filename)
+            file.save(save_path)
+            file_url = f"/static/uploads/{filename}"
+            result = {"success": True, "url": file_url, "filename": filename}
+        else:
+            result = {"success": False, "error": "请选择要上传的文件"}
+
+    return render_template("upload.html", username=username, user=user_info, **result)
 
 
 if __name__ == "__main__":
