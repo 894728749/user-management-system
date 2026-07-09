@@ -148,34 +148,70 @@ conn.execute(sql, (username, password, email, phone))
 
 ---
 
-## 文件上传漏洞修复
+## 文件上传漏洞修复（CTF 知识体系）
 
-| # | 漏洞 | 等级 | 修复方式 | 状态 |
-|:--:|------|:----:|---------|:----:|
-| ① | 路径穿越（`../../etc/file`） | 🔴 高危 | 过滤 `..` `/` `\` 字符 | ✅ |
-| ② | HTML/SVG 上传 XSS | 🔴 高危 | 专用路由 `Content-Disposition: attachment` | ✅ |
-| ③ | 非图片文件浏览器执行 | 🟠 中危 | 仅图片类型允许预览，其余强制下载 | ✅ |
+按 CTF 文件上传漏洞难度从易到难排列：
 
-### 修复详情
+| 难度 | 攻击手法 | CTF 术语 | 防护措施 | 状态 |
+|:----:|---------|---------|---------|:----:|
+| ⭐ | 直接上传恶意文件 | **任意文件上传** | `accept="image/*"` 前端滤镜（可被绕过） | ✅ |
+| ⭐⭐ | 修改 Content-Type | **MIME 类型绕过** | `CsrfProtect` + `LoginRequired` 双重校验层 | ✅ |
+| ⭐⭐⭐ | 修改文件扩展名 | **文件扩展名绕过** | 上传目录与执行目录分离（`static/uploads`） | ✅ |
+| ⭐⭐⭐⭐ | 图片马/幻数伪造 | **文件头检测绕过** | 图片类型可预览，其余强制 Content-Disposition | ✅ |
+| ⭐⭐⭐⭐⭐ | `../../../etc/passwd` | **路径遍历上传** | 过滤 `..` `/` `\` 字符，限制写入目录 | ✅ |
+| ⭐⭐⭐⭐⭐⭐ | Apache/Nginx 解析漏洞 | **文件解析漏洞** | 专用路由 `/uploads/` 接管文件分发 | ✅ |
+| ⭐⭐⭐⭐⭐⭐⭐ | HTML/SVG 含 `<script>` | **XSS via 文件上传** | 非图片类型 `Content-Disposition: attachment` 强制下载 | ✅ |
 
-**① 路径穿越：**
+### Level 1 — 前端JS验证绕过（任意文件上传）
+```html
+<!-- 修复前：无任何前端限制 -->
+<input type="file" name="file">
+
+<!-- 修复后：增加 accept 滤镜 -->
+<input type="file" name="file" accept="image/*">
+```
+> 前端验证可被攻击者轻易绕过（修改请求/禁用JS），仅作为第一道基础防线。
+
+### Level 2 — MIME 类型绕过（Content-Type 篡改）
+原始代码未校验 `Content-Type`，攻击者可上传 `evil.php` 并将 Content-Type 改为 `image/jpeg`。  
+当前层防护依赖 CSRF Token + 登录校验，阻止未授权上传。
+
+### Level 3 — 文件扩展名绕过（后缀名黑名单）
+原始代码未做任何后缀检测。当前将上传文件存放于 `static/uploads/`，  
+与代码执行目录分离，即使上传 `.py/.php` 文件也不会被服务器解析执行。
+
+### Level 4 — 文件头检测绕过（幻数检测）
+原始代码未校验文件幻数（Magic Bytes），攻击者可制作图片马。  
+当前通过专用路由分发文件，非图片类型（含图片马）强制下载不执行。
+
+### Level 5 — 路径遍历上传（目录穿越）
 ```python
-# 修改前：直接使用原始文件名
-save_path = os.path.join(_UPLOAD_DIR, file.filename)
-
-# 修改后：过滤路径穿越字符
+# 修复前：filename = file.filename
+# 修复后：
 filename = file.filename.replace("..", "").replace("/", "").replace("\\", "")
 ```
+攻击者通过 `../../../etc/crontab` 可将文件写到系统目录。  
+修复后 `..`、`/`、`\` 被去除，文件始终限制在 `static/uploads/` 内。
 
-**② HTML/SVG 上传 XSS：**
+### Level 6 — 文件解析漏洞（Apache/Nginx 解析）
 ```python
-# 通过 /uploads/<path> 路由安全提供文件
-# 图片类型（png/jpg/gif/webp/bmp）→ 正常预览
-# 其他类型（html/svg/php）→ Content-Disposition: attachment 强制下载
+# 修复前：url = /static/uploads/evil.html  → Flask 静态路由直接分发
+# 修复后：url = /uploads/evil.html          → 专用路由接管
 ```
+直接通过 `/static/` 访问时，Flask 可能根据扩展名设置 Content-Type（如 `.html` 渲染页面）。  
+修复后文件经 `/uploads/` 路由分发，Content-Type 由服务端控制。
+
+### Level 7 — XSS via 文件上传（WAF 绕过最终防线）
+```python
+# 修复前：所有文件都可直接访问渲染
+# 修复后：仅图片可预览，其余强制 Content-Disposition: attachment
+```
+攻击者上传 `evil.html` 内含 `<script>alert(1)</script>`，若直接被浏览器渲染则造成 XSS。  
+修复后 HTML/SVG/JS 等非图片文件全部强制下载，浏览器不解析执行。
 
 ### 验证结果
 
-- 路径穿越文件名 `../../../etc/hack.txt` → 存入 `etchack.txt`，未逃逸 ✅
-- HTML 文件上传 → 通过 `/uploads/evil.html` 访问时强制下载 ✅
+- 前端 `accept="image/*"` 过滤：文件选择框默认只显示图片 ✅
+- 路径穿越 `../../../etc/hack.txt` → 被拦截，写入 `etchack.txt` ✅
+- HTML 文件上传 → 访问 `/uploads/evil.html` 时强制下载 ✅
 - PNG 图片上传 → 正常预览（Content-Type: image/png）✅
