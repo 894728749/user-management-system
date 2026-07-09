@@ -460,18 +460,40 @@ def upload_file():
     user_info = _get_user_safe(username) if username and username in USERS else None
     result = {}
 
+    from urllib.parse import quote
+
     if request.method == "POST":
+        # 上传频率限制（每60秒最多10次）
+        up_count = session.get("_up_count", 0)
+        up_window = session.get("_up_window", time.time())
+        if time.time() - up_window > 60:
+            up_count = 0
+            up_window = time.time()
+        if up_count >= 10:
+            return render_template("upload.html", username=username, user=user_info,
+                                   error="上传过于频繁，请稍后再试"), 429
+        up_count += 1
+        session["_up_count"] = up_count
+        session["_up_window"] = up_window
+
         file = request.files.get("file")
         if file and file.filename:
-            # 去除路径穿越字符，防止写入任意目录
+            # 过滤路径穿越和 URL 特殊字符
             filename = file.filename.replace("..", "").replace("/", "").replace("\\", "")
+            # 过滤 URL 特殊字符（防止链接截断和注入）
+            for ch in ['#', '?', '&', ' ', '"', "'", '<', '>']:
+                filename = filename.replace(ch, '_')
             if not filename:
                 result = {"success": False, "error": "文件名无效"}
             else:
+                # 检查文件是否已存在（防覆盖攻击）
                 save_path = os.path.join(_UPLOAD_DIR, filename)
-                file.save(save_path)
-                file_url = f"/uploads/{filename}"
-                result = {"success": True, "url": file_url, "filename": filename}
+                if os.path.exists(save_path):
+                    result = {"success": False, "error": f"文件 {filename} 已存在"}
+                else:
+                    file.save(save_path)
+                    file_url = f"/uploads/{quote(filename)}"
+                    result = {"success": True, "url": file_url, "filename": filename}
         else:
             result = {"success": False, "error": "请选择要上传的文件"}
 
