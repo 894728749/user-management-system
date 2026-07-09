@@ -463,15 +463,49 @@ def upload_file():
     if request.method == "POST":
         file = request.files.get("file")
         if file and file.filename:
-            filename = file.filename
-            save_path = os.path.join(_UPLOAD_DIR, filename)
-            file.save(save_path)
-            file_url = f"/static/uploads/{filename}"
-            result = {"success": True, "url": file_url, "filename": filename}
+            # 去除路径穿越字符，防止写入任意目录
+            filename = file.filename.replace("..", "").replace("/", "").replace("\\", "")
+            if not filename:
+                result = {"success": False, "error": "文件名无效"}
+            else:
+                save_path = os.path.join(_UPLOAD_DIR, filename)
+                file.save(save_path)
+                file_url = f"/uploads/{filename}"
+                result = {"success": True, "url": file_url, "filename": filename}
         else:
             result = {"success": False, "error": "请选择要上传的文件"}
 
     return render_template("upload.html", username=username, user=user_info, **result)
+
+
+@app.route("/uploads/<path:filename>")
+@login_required
+def serve_upload(filename):
+    """安全地提供上传文件：图片可预览，其余强制下载"""
+    safe_name = filename.replace("..", "").replace("/", "").replace("\\", "")
+    file_path = os.path.join(_UPLOAD_DIR, safe_name)
+
+    if not os.path.exists(file_path):
+        return "文件不存在", 404
+
+    from flask import Response
+    import mimetypes
+
+    with open(file_path, "rb") as f:
+        data = f.read()
+
+    # 只对图片类型允许浏览器直接渲染
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+        mime = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+        return Response(data, mimetype=mime)
+    else:
+        # 非图片文件强制下载，防止 HTML/SVG 在浏览器中执行脚本
+        return Response(
+            data,
+            mimetype="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'}
+        )
 
 
 if __name__ == "__main__":

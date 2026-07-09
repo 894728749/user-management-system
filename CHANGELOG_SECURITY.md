@@ -145,3 +145,37 @@ conn.execute(sql, (username, password, email, phone))
 - 密码从环境变量读取，支持运行时修改
 - 图形验证码（3次失败后自动弹出，Pillow 生成）
 - 默认密码以预计算哈希形式存储，源码无明文
+
+---
+
+## 文件上传漏洞修复
+
+| # | 漏洞 | 等级 | 修复方式 | 状态 |
+|:--:|------|:----:|---------|:----:|
+| ① | 路径穿越（`../../etc/file`） | 🔴 高危 | 过滤 `..` `/` `\` 字符 | ✅ |
+| ② | HTML/SVG 上传 XSS | 🔴 高危 | 专用路由 `Content-Disposition: attachment` | ✅ |
+| ③ | 非图片文件浏览器执行 | 🟠 中危 | 仅图片类型允许预览，其余强制下载 | ✅ |
+
+### 修复详情
+
+**① 路径穿越：**
+```python
+# 修改前：直接使用原始文件名
+save_path = os.path.join(_UPLOAD_DIR, file.filename)
+
+# 修改后：过滤路径穿越字符
+filename = file.filename.replace("..", "").replace("/", "").replace("\\", "")
+```
+
+**② HTML/SVG 上传 XSS：**
+```python
+# 通过 /uploads/<path> 路由安全提供文件
+# 图片类型（png/jpg/gif/webp/bmp）→ 正常预览
+# 其他类型（html/svg/php）→ Content-Disposition: attachment 强制下载
+```
+
+### 验证结果
+
+- 路径穿越文件名 `../../../etc/hack.txt` → 存入 `etchack.txt`，未逃逸 ✅
+- HTML 文件上传 → 通过 `/uploads/evil.html` 访问时强制下载 ✅
+- PNG 图片上传 → 正常预览（Content-Type: image/png）✅
