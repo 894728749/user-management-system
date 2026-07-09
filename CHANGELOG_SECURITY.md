@@ -215,3 +215,15 @@ filename = file.filename.replace("..", "").replace("/", "").replace("\\", "")
 - 路径穿越 `../../../etc/hack.txt` → 被拦截，写入 `etchack.txt` ✅
 - HTML 文件上传 → 访问 `/uploads/evil.html` 时强制下载 ✅
 - PNG 图片上传 → 正常预览（Content-Type: image/png）✅
+- `static/uploads/` 路径废弃 → `/uploads/` 路由独占，需登录访问 ✅
+- 未登录直接访问 `/static/uploads/` → 404（目录已迁移到 `data/uploads/`）✅
+
+---
+
+### Level 8 — 权限绕过（文件存储路径隔离）
+
+| 项目 | 内容 |
+|------|------|
+| **漏洞** | 文件保存在 `static/uploads/` 下，Flask 静态路由直接对外提供，**绕过登录校验 + Content-Disposition 保护** |
+| **攻击场景** | 攻击者直接访问 `/static/uploads/evil.html`，不登录即可查看文件，且 HTML 直接被浏览器渲染执行 |
+| **修复** | 上传目录从 `static/uploads/` 迁移到 `data/uploads/`，仅能通过 `/uploads/<path>` 路由访问（需登录 + 类型检查） |

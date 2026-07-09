@@ -31,7 +31,7 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=30)
 
 # 文件上传配置
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16MB
-_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "uploads")
+_UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "uploads")
 os.makedirs(_UPLOAD_DIR, exist_ok=True)
 
 
