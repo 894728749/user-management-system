@@ -161,6 +161,10 @@ conn.execute(sql, (username, password, email, phone))
 | ⭐⭐⭐⭐⭐ | `../../../etc/passwd` | **路径遍历上传** | 过滤 `..` `/` `\` 字符，限制写入目录 | ✅ |
 | ⭐⭐⭐⭐⭐⭐ | Apache/Nginx 解析漏洞 | **文件解析漏洞** | 专用路由 `/uploads/` 接管文件分发 | ✅ |
 | ⭐⭐⭐⭐⭐⭐⭐ | HTML/SVG 含 `<script>` | **XSS via 文件上传** | 非图片类型 `Content-Disposition: attachment` 强制下载 | ✅ |
+| ⭐⭐⭐⭐⭐⭐⭐⭐ | 直接访问 `/static/uploads/` | **权限绕过（路径隔离）** | 目录从 `static/` 迁移至 `data/` | ✅ |
+| ⭐⭐⭐⭐⭐⭐⭐⭐⭐ | 文件名含 `#` `?` `&` | **URL 特殊字符注入** | 字符替换 + `quote()` 编码 | ✅ |
+| ⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐ | 同名文件二次上传 | **文件覆盖攻击** | 存在检查 + 拒绝 | ✅ |
+| ⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐ | 批量上传填满磁盘 | **上传频率 DOS** | Session 60s/10次 | ✅ |
 
 ### Level 1 — 前端JS验证绕过（任意文件上传）
 ```html

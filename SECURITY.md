@@ -1,122 +1,78 @@
 # 安全加固文档
 
-## 概述
-本文档记录了对用户管理系统进行的所有安全修复和改进措施。
-修复日期：2026-07-07
+> 记录用户管理系统的所有安全修复措施。
 
 ---
 
-## 📋 修复清单
-
-### 1. 密码泄露防护
+## 1. 密码安全
 
 | 修复项 | 改动前 | 改动后 |
 |--------|--------|--------|
-| 密码存储 | 明文密码 `"admin123"` | Werkzeug `generate_password_hash()` 加盐哈希 |
-| 页面显示密码 | 首页直接显示密码原文 | 禁止在页面任何位置显示密码 |
-| 模板上下文泄露 | `USERS[username]` 整个字典传入模板（含密码） | `_get_user_safe()` 函数剥离密码字段后再传入模板 |
-| 硬编码密码 | 密码直接在代码里写死 | 优先从环境变量读取，代码中仅保留开发用默认值 |
+| 密码存储 | 明文密码 | scrypt 加盐哈希 |
+| 页面显示 | 首页显示密码原文 | 禁止显示密码 |
+| 模板上下文 | 整本字典传入模板 | `_get_user_safe()` 排除密码字段 |
+| 源码安全 | 密码明文写死在代码中 | 环境变量 / 预计算加盐哈希 |
 
-### 2. 会话安全
+## 2. 会话安全
 
 | 修复项 | 改动前 | 改动后 |
 |--------|--------|--------|
-| Secret Key | `"dev-key-2025"` 弱密钥 | `secrets.token_hex(32)` 随机 64 位十六进制密钥 |
-| HttpOnly Cookie | 未设置 | `SESSION_COOKIE_HTTPONLY = True`（禁止 JS 读取 Cookie） |
-| SameSite | 未设置 | `SESSION_COOKIE_SAMESITE = "Lax"`（防止 CSRF 跨站传递 Cookie） |
-| Session 超时 | 无限制（浏览器进程期） | `PERMANENT_SESSION_LIFETIME = 30 分钟` |
-| Secure 标志 | 未设置 | `SESSION_COOKIE_SECURE = False`（部署 HTTPS 后需改为 True） |
+| Secret Key | `"dev-key-2025"` | `secrets.token_hex(32)` |
+| HttpOnly | 未设置 | `True` |
+| SameSite | 未设置 | `Lax` |
+| Secure | 未设置 | `True` |
+| Session 超时 | 无限制 | 30 分钟 |
 
-### 3. 暴力破解防护
+## 3. 暴力破解防护
 
-| 修复项 | 说明 |
-|--------|------|
-| 速率限制 | 每 IP 每 15 分钟最多 10 次登录尝试 |
-| 账号锁定 | 同一账号 5 次连续失败后锁定 15 分钟 |
-| 通用错误提示 | 不区分"用户名不存在"和"密码错误"，统一返回"用户名或密码错误" |
+| 防护措施 | 说明 |
+|---------|------|
+| 图形验证码 | 3 次失败后自动弹出 |
+| 速率限制 | 每 IP 15 分钟 10 次（SQLite 持久化） |
+| 账号锁定 | 5 次失败锁定 15 分钟 |
+| 错误消息 | 统一"用户名或密码错误" |
 
-### 4. 跨站请求伪造防护 (CSRF)
+## 4. SQL 注入防护
 
-- 登录表单新增隐藏字段 `csrf_token`
-- 每次 session 生成唯一 token，POST 时校验
-- 使用 `secrets.compare_digest()` 防止时序攻击
-- 登录成功后重新生成 token（防 Session Fixation）
-- 登出时调用 `session.clear()` 清除所有状态
+| 位置 | 修复方式 | 状态 |
+|------|---------|:----:|
+| 搜索 `LIKE` 查询 | 参数化查询 `?` 占位符 | ✅ |
+| 注册 `INSERT` 查询 | 参数化查询 `?` 占位符 | ✅ |
+| 错误信息泄露 | 通用提示替代原始异常 | ✅ |
 
-### 5. 安全响应头
+## 5. 文件上传安全（11 层 CTF 防护体系）
 
-| 响应头 | 值 | 作用 |
-|--------|-----|------|
-| `X-Frame-Options` | `DENY` | 防止点击劫持 |
-| `X-Content-Type-Options` | `nosniff` | 禁止 MIME 类型嗅探 |
-| `X-XSS-Protection` | `1; mode=block` | 启用浏览器 XSS 过滤器 |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` | 控制 Referer 头 |
-| `Content-Security-Policy` | `default-src 'self'; form-action 'self'` | 内容安全策略 |
-| `Server` | `Web Server`（隐藏真实版本） | 减少攻击面 |
+| 层级 | CTF 漏洞名称 | 防护措施 |
+|:----:|-------------|---------|
+| L1 | 任意文件上传 | `accept="image/*"` 前端滤镜 |
+| L2 | MIME 类型绕过 | CSRF + LoginRequired 双重校验 |
+| L3 | 文件扩展名绕过 | 上传目录与执行目录隔离 |
+| L4 | 文件头检测绕过 | 非图片文件强制下载 |
+| L5 | 路径遍历上传 | 过滤 `..` `/` `\` 字符 |
+| L6 | 解析漏洞 | 专用路由 `/uploads/` 接管分发 |
+| L7 | XSS via 上传 | Content-Disposition: attachment |
+| L8 | 权限绕过 | 目录从 `static/` 迁至 `data/` |
+| L9 | URL 特殊字符 | `# ? &` 替换为 `_`，`quote()` 编码 |
+| L10 | 文件覆盖 | 存在检查 + 拒绝 |
+| L11 | DOS 攻击 | Session 级别频率限制 |
 
-### 6. 审计日志
+## 6. 安全响应头
 
-- 记录所有登录成功/失败事件
-- 记录账号锁定事件
-- 记录 CSRF 校验失败事件
-- 记录登出事件
-- 日志文件位置：`logs/login_audit.log`
+| 响应头 | 配置值 |
+|--------|--------|
+| Server | `Web Server` |
+| X-Frame-Options | `DENY` |
+| X-Content-Type-Options | `nosniff` |
+| HSTS | `max-age=31536000` |
+| CSP | `default-src 'self'` |
+| X-XSS-Protection | `1; mode=block` |
+| Cache-Control | `no-store` |
 
-### 7. 调试信息泄露
+## 7. 生产环境建议
 
-- 移除登录页 HTML 注释中的默认账号信息
-- 关闭 `debug=True` 模式，禁止显示详细报错信息
-
----
-
-## 🔧 生产环境建议
-
-### HTTPS 部署（强烈推荐）
-即使在代码层面修复了所有问题，**密码在网络传输过程中仍然是明文**（HTTP）。
-必须配置 HTTPS 以加密传输：
-
-```bash
-# 方案一：Nginx 反向代理 + Let's Encrypt
-sudo apt install nginx certbot python3-certbot-nginx
-sudo certbot --nginx -d your-domain.com
-
-# Nginx 配置示例 (/etc/nginx/sites-available/user-manager)
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-
-    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:5000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-### 环境变量配置
-```bash
-# 设置强密码（避免硬编码在源码中）
-export ADMIN_PASSWORD="YourStrongPasswordHere!@#$"
-export ALICE_PASSWORD="AnotherStrongPassword!@#$"
-```
-
-### 其他建议
-1. 将 `SESSION_COOKIE_SECURE` 改为 `True`（启用 HTTPS 后）
-2. 配置防火墙，限制 5000 端口仅允许本地访问
-3. 使用 `fail2ban` 进一步防护暴力破解
-4. 定期轮换密钥和密码
-5. 限制日志文件大小，配置日志轮转
-
----
-
-## ⚠️ 敏感路径提醒
-
-以下路径包含敏感操作，部署时应注意保护：
-- `/login` — 登录入口（已添加 CSRF + 速率限制）
-- `/logout` — 登出（已添加审计日志）
-- `logs/login_audit.log` — 审计日志（禁止 Web 直接访问）
+- HTTPS 使用可信证书（Let's Encrypt）
+- Nginx 反向代理 + Gunicorn
+- 防火墙限制 5000 端口仅本地访问
+- 配置 fail2ban 防护
+- 日志轮转策略
+- 定期轮换密钥和密码
