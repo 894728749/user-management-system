@@ -266,11 +266,19 @@ _ADMIN_MD5 = os.environ.get("ADMIN_PASSWORD", "64d37bc94962bb86be5e66f0622841ef"
 _ALICE_MD5 = os.environ.get("ALICE_PASSWORD", "41112bc463ff9235d6f187872d123a3f")
 
 USERS = {
-    "admin": {"username": "admin", "password": _ADMIN_MD5, "role": "admin",
+    "admin": {"id": 1, "username": "admin", "password": _ADMIN_MD5, "role": "admin",
               "email": "admin@example.com", "phone": "13800138000", "balance": 99999},
-    "alice": {"username": "alice", "password": _ALICE_MD5, "role": "user",
+    "alice": {"id": 2, "username": "alice", "password": _ALICE_MD5, "role": "user",
               "email": "alice@example.com", "phone": "13900139001", "balance": 100},
 }
+
+
+def _get_user_by_id(uid):
+    """根据 user_id 查找用户"""
+    for u in USERS.values():
+        if u["id"] == uid:
+            return u
+    return None
 
 
 def _get_user_safe(username):
@@ -528,6 +536,33 @@ def serve_upload(filename):
             mimetype="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{safe_name}"'}
         )
+
+
+@app.route("/profile")
+def profile():
+    """个人中心（根据 URL 参数 user_id 展示用户信息）"""
+    username = session.get("username")
+    current_user = _get_user_safe(username) if username and username in USERS else None
+
+    user_id = request.args.get("user_id", type=int)
+    target_user = _get_user_by_id(user_id) if user_id else None
+
+    return render_template("profile.html", username=username, user=current_user,
+                           target=target_user)
+
+
+@app.route("/recharge", methods=["POST"])
+def recharge():
+    """充值（不校验 amount 正负，不验证权限）"""
+    user_id = request.form.get("user_id", type=int)
+    amount = request.form.get("amount", type=float, default=0)
+
+    for u in USERS.values():
+        if u["id"] == user_id:
+            u["balance"] = u["balance"] + amount
+            break
+
+    return redirect(f"/profile?user_id={user_id}")
 
 
 if __name__ == "__main__":

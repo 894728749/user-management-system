@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% if target %}
+<div class="card">
+    <h2>个人中心</h2>
+    <h3>用户信息</h3>
+    <ul class="info-list">
+        <li><span class="label">ID：</span>{{ target.id }}</li>
+        <li><span class="label">用户名：</span>{{ target.username }}</li>
+        <li><span class="label">邮箱：</span>{{ target.email }}</li>
+        <li><span class="label">手机：</span>{{ target.phone }}</li>
+        <li><span class="label">角色：</span>{{ target.role }}</li>
+        <li><span class="label">余额：</span><strong class="balance">{{ target.balance }}</strong></li>
+    </ul>
+
+    <h3>充值</h3>
+    <form method="POST" action="/recharge" class="recharge-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="user_id" value="{{ target.id }}">
+        <div class="form-group">
+            <label for="amount">充值金额</label>
+            <input type="number" id="amount" name="amount" placeholder="请输入金额" step="0.01" required>
+        </div>
+        <button type="submit" class="btn btn-primary">充值</button>
+    </form>
+
+    <div style="margin-top:16px;">
+        <a href="/" class="btn btn-primary" style="width:auto;">返回首页</a>
+    </div>
+</div>
+{% else %}
+<div class="card">
+    <h2>个人中心</h2>
+    <p>请提供有效的用户 ID，例如：<a href="/profile?user_id=1">/profile?user_id=1</a></p>
+</div>
+{% endif %}
+
+{% endblock %}
