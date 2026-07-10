@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>充值订单管理</h2>
+    <table class="data-table">
+        <thead>
+            <tr><th>ID</th><th>交易号</th><th>用户</th><th>金额(元)</th><th>状态</th><th>创建时间</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+            {% for o in orders %}
+            <tr>
+                <td>{{ o.id }}</td>
+                <td><code>{{ o.transaction_id[:16] }}...</code></td>
+                <td>{{ o.username }}</td>
+                <td>{{ "%.2f"|format(o.amount_cents / 100) }}</td>
+                <td>{{ o.status }}</td>
+                <td>{{ o.created_at }}</td>
+                <td>
+                    {% if o.status == "pending" %}
+                    <form method="POST" action="/admin/recharge/{{ o.id }}/approve" style="display:inline;">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" class="btn btn-primary btn-inline">审批</button>
+                    </form>
+                    {% else %}{{ o.completed_at[:10] if o.completed_at else '' }}{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <a href="/admin" class="btn btn-primary btn-inline" style="margin-top:16px;">返回管理后台</a>
+</div>
+{% endblock %}
