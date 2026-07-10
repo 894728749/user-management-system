@@ -434,6 +434,7 @@ def register():
 
 
 @app.route("/search")
+@login_required
 def search():
     """搜索用户"""
     keyword = request.args.get("keyword", "")
@@ -539,30 +540,46 @@ def serve_upload(filename):
 
 
 @app.route("/profile")
+@login_required
 def profile():
-    """个人中心（根据 URL 参数 user_id 展示用户信息）"""
+    """个人中心（仅限查看自己的资料）"""
     username = session.get("username")
-    current_user = _get_user_safe(username) if username and username in USERS else None
+    if not username:
+        return redirect("/login")
 
-    user_id = request.args.get("user_id", type=int)
-    target_user = _get_user_by_id(user_id) if user_id else None
+    current_user = USERS.get(username)
+    if not current_user:
+        return redirect("/login")
 
-    return render_template("profile.html", username=username, user=current_user,
-                           target=target_user)
+    # 从 session 获取用户 ID，禁止通过 URL 参数越权访问他人资料
+    user_id = current_user["id"]
+    target_user = _get_user_by_id(user_id)
+
+    return render_template("profile.html", username=username,
+                           user=_get_user_safe(username), target=target_user)
 
 
 @app.route("/recharge", methods=["POST"])
+@login_required
 def recharge():
-    """充值（不校验 amount 正负，不验证权限）"""
-    user_id = request.form.get("user_id", type=int)
+    """充值（仅限给自己充值，金额必须为正）"""
+    username = session.get("username")
+    current_user = USERS.get(username)
+    if not current_user:
+        return redirect("/login")
+
+    # 从表单获取金额，user_id 强制使用当前登录用户
     amount = request.form.get("amount", type=float, default=0)
 
-    for u in USERS.values():
-        if u["id"] == user_id:
-            u["balance"] = u["balance"] + amount
-            break
+    # 金额必须为正数
+    if amount <= 0:
+        return render_template("profile.html", username=username,
+                               user=_get_user_safe(username),
+                               target=current_user,
+                               error="充值金额必须大于 0"), 400
 
-    return redirect(f"/profile?user_id={user_id}")
+    current_user["balance"] = current_user["balance"] + amount
+    return redirect(f"/profile")
 
 
 if __name__ == "__main__":

@@ -23,13 +23,16 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label for="file">选择图片文件</label>
-            <input type="file" id="file" name="file" class="file-input" accept="image/*" required>
+            <div class="file-input-wrapper">
+                点击选择文件（支持 JPG/PNG/GIF）
+                <input type="file" id="file" name="file" class="file-input" accept="image/*" required>
+            </div>
         </div>
         <button type="submit" class="btn btn-primary">上传</button>
     </form>
 
     <div style="margin-top:16px;">
-        <a href="/" class="btn btn-primary" style="width:auto;">返回首页</a>
+        <a href="/" class="btn btn-primary btn-inline">返回首页</a>
     </div>
 </div>
 {% endblock %}

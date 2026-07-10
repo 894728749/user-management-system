@@ -259,3 +259,66 @@ filename = file.filename.replace("..", "").replace("/", "").replace("\\", "")
 - 文件名 `test#1.png` → URL 中 `#` 被替换为 `_` ✅
 - 重复上传同一文件名 → 提示"文件已存在" ✅
 - 连续上传 10+ 次 → 提示"上传过于频繁" ✅
+
+---
+
+## 业务逻辑漏洞修复
+
+| 编号 | 漏洞类型 | 风险等级 | 修复方式 | 状态 |
+|:----:|---------|:--------:|---------|:----:|
+| BIZ-001 | **IDOR 水平越权**（任意用户资料查看） | 🔴 高危 | `/profile` 改为从 session 获取 user_id，禁止 URL 参数越权 | ✅ |
+| BIZ-002 | **支付逻辑漏洞**（负金额、跨用户充值） | 🔴 高危 | 金额 `<= 0` 拒绝；强制当前登录用户，不可给他人充值 | ✅ |
+| BIZ-003 | **未授权访问**（未登录可搜索） | 🟠 中危 | `/search` 添加 `@login_required` 装饰器 | ✅ |
+
+### BIZ-001：IDOR 水平越权
+
+**漏洞描述：** `/profile?user_id=1` 通过 URL 参数指定查询目标，未验证当前登录用户与目标 user_id 是否匹配。alice 修改 URL 为 `/profile?user_id=1` 即可查看 admin 的完整资料。
+
+**修复代码：**
+```python
+# 修改前：user_id 从 URL 参数获取，可越权
+user_id = request.args.get("user_id", type=int)
+
+# 修改后：user_id 从 session 获取，仅限本人
+current_user = USERS.get(session.get("username"))
+user_id = current_user["id"]
+```
+
+### BIZ-002：支付逻辑漏洞
+
+**漏洞描述：** 充值接口未校验 `amount` 正负，攻击者可提交负值"盗刷"余额。同时表单包含 `user_id` 隐藏字段，可修改为他人 ID 进行跨用户充值。
+
+**修复代码：**
+```python
+# 修改前：不校验正负，可给任意用户充值
+user_id = request.form.get("user_id", type=int)
+u["balance"] = u["balance"] + amount
+
+# 修改后：校验正负，仅限本人
+if amount <= 0:
+    return render_template("profile.html", error="充值金额必须大于 0"), 400
+current_user["balance"] = current_user["balance"] + amount
+```
+
+### BIZ-003：未授权搜索
+
+**漏洞描述：** 搜索接口 `/search` 未添加登录校验，未登录用户可搜索数据库中的任意用户信息。
+
+**修复代码：**
+```python
+# 修改前
+@app.route("/search")
+def search():
+
+# 修改后
+@app.route("/search")
+@login_required
+def search():
+```
+
+### 验证结果
+
+- alice 访问 `/profile` → 仅显示 alice 自己的资料 ✅
+- alice 访问 `/profile?user_id=1` → 依然显示 alice 自己的资料（URL 参数被忽略）✅
+- 负金额充值 `amount=-100` → 提示"充值金额必须大于 0" ✅
+- 未登录搜索 `/search?keyword=admin` → 重定向到 /login ✅
