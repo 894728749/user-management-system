@@ -356,6 +356,31 @@ def _inject_captcha():
     return dict(need_captcha=_need_captcha(ip, uname))
 
 
+import re
+
+
+# ===== HTML 消毒：允许基础标签，移除 XSS 向量 =====
+_SAFE_TAG_WHITELIST = {"html", "head", "meta", "style", "div", "h1", "h2", "h3",
+                       "p", "ul", "ol", "li", "strong", "em", "code", "span",
+                       "a", "br", "hr", "table", "tr", "td", "th", "thead", "tbody"}
+_SAFE_ATTR_WHITELIST = {"class", "id", "style", "href", "src", "alt", "title",
+                        "target", "rel", "charset", "name", "content"}
+
+
+def _sanitize_html(html_text):
+    """移除 HTML 中的危险标签和属性，防止 XSS"""
+    # 移除 <script> 及其内容
+    html_text = re.sub(r'<script[^>]*>.*?</script>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
+    # 移除 </?script>
+    html_text = re.sub(r'</?script[^>]*>', '', html_text, flags=re.IGNORECASE)
+    # 移除 on* 事件处理器属性（如 onclick, onload, onerror）
+    html_text = re.sub(r'\s+on\w+\s*=\s*["\'][^"\']*["\']', '', html_text, flags=re.IGNORECASE)
+    # 移除 javascript: 伪协议
+    html_text = re.sub(r'href\s*=\s*["\']\s*javascript\s*:', 'href="#', html_text, flags=re.IGNORECASE)
+    html_text = re.sub(r'src\s*=\s*["\']\s*javascript\s*:', 'src="#', html_text, flags=re.IGNORECASE)
+    return html_text
+
+
 # ===== 装饰器 =====
 def login_required(f):
     @functools.wraps(f)
@@ -439,6 +464,9 @@ def login():
 @app.route("/logout", methods=["POST"])
 @login_required
 def logout():
+    if not _check_csrf(request.form.get("csrf_token", "")):
+        return redirect("/")
+
     username = session.get("username", "unknown")
     session.clear()
     _audit("LOGOUT", username, request.remote_addr or "unknown", "登出")
@@ -452,15 +480,21 @@ def profile():
     user_info = _get_user_by_id(uid)
     if not user_info:
         return redirect("/login")
+    # 消毒 error 参数防止 XSS
+    err = request.args.get("error", "")
+    err = _sanitize_html(err)[:200] if err else None
     return render_template("profile.html",
                            username=user_info["username"],
                            target=dict(user_info),
-                           error=request.args.get("error"))
+                           error=err)
 
 
 @app.route("/recharge", methods=["POST"])
 @login_required
 def recharge():
+    if not _check_csrf(request.form.get("csrf_token", "")):
+        return redirect("/profile?error=安全验证失败，请刷新页面重试")
+
     uid = session.get("user_id")
     amount_str = request.form.get("amount", "").strip()
 
@@ -498,6 +532,9 @@ def recharge():
 @login_required
 @admin_required
 def approve_recharge(order_id):
+    if not _check_csrf(request.form.get("csrf_token", "")):
+        return "安全验证失败", 400
+
     with _db_lock, _get_conn() as conn:
         order = conn.execute("SELECT * FROM recharge_orders WHERE id=?", (order_id,)).fetchone()
         if not order:
@@ -548,12 +585,16 @@ def admin_user_detail(user_id):
 @login_required
 @admin_required
 def admin_panel():
-    return render_template("admin.html", username=session.get("username"))
+    return render_template("admin.html", username=session.get("username"),
+                           user=_get_user_safe(session.get("username")))
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
+        if not _check_csrf(request.form.get("csrf_token", "")):
+            return render_template("register.html", error="安全验证失败，请刷新页面重试"), 400
+
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         email = request.form.get("email", "").strip()
@@ -705,6 +746,111 @@ def serve_upload(filename):
         })
 
 
+# ===== 动态页面加载 =====
+_SAFE_PAGES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages")
+# 白名单页面名称（防御推荐方案：精确控制可访问的页面）
+_ALLOWED_PAGES = {"help", "about", "contact"}
+
+@app.route("/page", methods=["GET"])
+def dynamic_page():
+    name = request.args.get("name", "")
+    page_content = None
+    error = None
+
+    uid = session.get("user_id")
+    user_info = _get_user_by_id(uid) if uid else None
+    uname = user_info["username"] if user_info else None
+    user_ctx = dict(username=uname, user=_get_user_safe(uname) if uname else None)
+
+    if not name:
+        error = "请指定页面名称"
+        return render_template("index.html", page_content=error, page_is_safe=False, **user_ctx), 400
+
+    # ===== 第一层防御：白名单模式（精确控制，内容可信）=====
+    if name in _ALLOWED_PAGES:
+        safe_path = os.path.join(_SAFE_PAGES_DIR, name + ".html")
+        if os.path.isfile(safe_path):
+            with open(safe_path, "r", encoding="utf-8") as f:
+                page_content = f.read()
+            # 白名单页面内容消毒后允许渲染 HTML
+            page_content = _sanitize_html(page_content)
+            return render_template("index.html", page_content=page_content, page_is_safe=True, **user_ctx)
+
+    # ===== 第二层防御：realpath 路径规范化 + 前缀校验 =====
+    safe_base = os.path.realpath(_SAFE_PAGES_DIR)
+    requested = os.path.realpath(os.path.join(safe_base, name))
+
+    if not requested.startswith(safe_base + os.sep) and requested != safe_base:
+        error = "页面不存在"
+        return render_template("index.html", page_content=error, page_is_safe=False, **user_ctx), 404
+
+    # 直接尝试读取
+    if os.path.isfile(requested):
+        with open(requested, "r", encoding="utf-8") as f:
+            page_content = f.read()
+        return render_template("index.html", page_content=page_content, page_is_safe=False, **user_ctx)
+
+    # 尝试加 .html 后缀
+    requested_html = requested + ".html"
+    if os.path.isfile(requested_html):
+        with open(requested_html, "r", encoding="utf-8") as f:
+            page_content = f.read()
+        return render_template("index.html", page_content=page_content, page_is_safe=False, **user_ctx)
+
+    error = "页面不存在"
+    return render_template("index.html", page_content=error, page_is_safe=False, **user_ctx), 404
+
+
+# ===== 修改密码 =====
+@app.route("/change-password", methods=["POST"])
+@login_required
+def change_password():
+    # CSRF 保护
+    if not _check_csrf(request.form.get("csrf_token", "")):
+        return redirect("/profile?error=安全验证失败，请刷新页面重试")
+
+    username = request.form.get("username", "").strip()
+    old_password = request.form.get("old_password", "")
+    new_password = request.form.get("new_password", "")
+
+    # 校验只能修改自己的密码
+    session_username = session.get("username")
+    if username != session_username:
+        return redirect("/profile?error=无权修改他人的密码")
+
+    if not username or not new_password:
+        return redirect("/profile?error=用户名和密码不能为空")
+
+    if len(new_password) < 4:
+        return redirect("/profile?error=密码长度至少4位")
+
+    # 验证原密码
+    with _get_conn() as conn:
+        user = conn.execute(
+            "SELECT password_hash FROM users WHERE username=?", (username,)
+        ).fetchone()
+
+    if not user:
+        return redirect("/profile?error=用户不存在")
+
+    if not check_password_hash(user["password_hash"], old_password):
+        return redirect("/profile?error=原密码错误")
+
+    # 更新密码
+    new_hash = generate_password_hash(new_password)
+    with _db_lock, _get_conn() as conn:
+        conn.execute("UPDATE users SET password_hash=? WHERE username=?", (new_hash, username))
+        conn.commit()
+
+    _audit("PASSWORD_CHANGED", session.get("username", "unknown"),
+           request.remote_addr or "unknown", f"modified_user={username}")
+    return redirect("/profile")
+
+
+_SSL_CERT = os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.crt")
+_SSL_KEY = os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.key")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("  用户管理系统 — 已启动")
@@ -713,4 +859,4 @@ if __name__ == "__main__":
     from werkzeug.serving import WSGIRequestHandler
     WSGIRequestHandler.server_version = "Web Server"
     WSGIRequestHandler.sys_version = ""
-    app.run(host="0.0.0.0", port=5000, ssl_context=("ssl.crt", "ssl.key"))
+    app.run(host="0.0.0.0", port=5000, ssl_context=(_SSL_CERT, _SSL_KEY))
