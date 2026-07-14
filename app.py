@@ -517,44 +517,21 @@ def recharge():
     txid = str(uuid.uuid4())
 
     with _db_lock, _get_conn() as conn:
+        # 直接到账，无需审核
         conn.execute(
-            "INSERT INTO recharge_orders (transaction_id, user_id, amount_cents, status) VALUES (?,?,?,'pending')",
+            "INSERT INTO recharge_orders (transaction_id, user_id, amount_cents, status, completed_at, operator) "
+            "VALUES (?,?,?,'completed',datetime('now'),'系统自动')",
             (txid, uid, amount_cents)
-        )
-        conn.commit()
-
-    _audit("RECHARGE_CREATED", session.get("username", ""), request.remote_addr or "",
-           f"txid={txid} amount_cents={amount_cents}")
-    return redirect("/profile")
-
-
-@app.route("/admin/recharge/<int:order_id>/approve", methods=["POST"])
-@login_required
-@admin_required
-def approve_recharge(order_id):
-    if not _check_csrf(request.form.get("csrf_token", "")):
-        return "安全验证失败", 400
-
-    with _db_lock, _get_conn() as conn:
-        order = conn.execute("SELECT * FROM recharge_orders WHERE id=?", (order_id,)).fetchone()
-        if not order:
-            return "订单不存在", 404
-        if order["status"] != "pending":
-            return "订单已处理", 400
-
-        conn.execute(
-            "UPDATE recharge_orders SET status='completed', completed_at=datetime('now'), operator=? WHERE id=?",
-            (session.get("username"), order_id)
         )
         conn.execute(
             "UPDATE users SET balance_cents = balance_cents + ? WHERE id=?",
-            (order["amount_cents"], order["user_id"])
+            (amount_cents, uid)
         )
         conn.commit()
 
-    _audit("RECHARGE_APPROVED", session.get("username", ""), request.remote_addr or "",
-           f"order_id={order_id} amount_cents={order['amount_cents']}")
-    return redirect("/admin/orders")
+    _audit("RECHARGE_OK", session.get("username", ""), request.remote_addr or "",
+           f"txid={txid} amount_cents={amount_cents} 自动到账")
+    return redirect("/profile")
 
 
 @app.route("/admin/orders")

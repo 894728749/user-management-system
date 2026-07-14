@@ -33,3 +33,4 @@ Thumbs.db
 *.db-shm
 *.db-wal
 logs/rate_limit.db
+.github/workflows/
