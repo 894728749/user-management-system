@@ -2,7 +2,7 @@
 用户管理系统 - 统一数据源版本
 """
 import os, re, time, secrets, logging, random, string, sqlite3, threading
-import functools, hashlib, uuid
+import functools, hashlib, uuid, urllib.request, urllib.error, urllib.parse, socket
 from decimal import Decimal, ROUND_DOWN
 from io import BytesIO
 from datetime import timedelta, datetime
@@ -822,6 +822,113 @@ def change_password():
     _audit("PASSWORD_CHANGED", session.get("username", "unknown"),
            request.remote_addr or "unknown", f"modified_user={username}")
     return redirect("/profile")
+
+
+# ===== URL 抓取功能（SSRF 防护）=====
+# 内网 IP 段黑名单
+_PRIVATE_IP_BLOCKS = [
+    ("127.0.0.0", "127.255.255.255"),
+    ("10.0.0.0", "10.255.255.255"),
+    ("172.16.0.0", "172.31.255.255"),
+    ("192.168.0.0", "192.168.255.255"),
+    ("169.254.0.0", "169.254.255.255"),
+    ("0.0.0.0", "0.255.255.255"),
+    ("100.64.0.0", "100.127.255.255"),
+]
+
+# 特殊内网域名
+_PRIVATE_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _is_private_ip(ip_str):
+    """检查 IP 是否属于内网/保留地址段"""
+    try:
+        ip_parts = [int(x) for x in ip_str.split(".")]
+        ip_num = (ip_parts[0] << 24) + (ip_parts[1] << 16) + (ip_parts[2] << 8) + ip_parts[3]
+        for start, end in _PRIVATE_IP_BLOCKS:
+            start_num = sum(int(x) << (24 - 8 * i) for i, x in enumerate(start.split(".")))
+            end_num = sum(int(x) << (24 - 8 * i) for i, x in enumerate(end.split(".")))
+            if start_num <= ip_num <= end_num:
+                return True
+    except Exception:
+        return True  # 解析失败时拒绝
+    return False
+
+
+def _validate_url_target(url):
+    """SSRF 防护：校验 URL 的目标是否安全"""
+    parsed = urllib.parse.urlparse(url)
+
+    # 1. 协议限制：仅允许 http/https
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"不支持的协议: {parsed.scheme}")
+
+    # 2. 检查 hostname
+    hostname = parsed.hostname.lower()
+    if hostname in _PRIVATE_HOSTNAMES:
+        raise ValueError("不允许访问内网地址")
+
+    # 3. DNS 解析并检查 IP（防 DNS rebinding）
+    try:
+        ips = socket.getaddrinfo(hostname, 80)
+        for family, _, _, _, sockaddr in ips:
+            ip = sockaddr[0]
+            if _is_private_ip(ip):
+                raise ValueError(f"目标地址 {ip} 为内网地址，已拒绝访问")
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError("无法解析目标地址")
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """重定向处理器：检查重定向目标是否安全"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            _validate_url_target(newurl)
+        except ValueError as e:
+            raise urllib.error.HTTPError(req.full_url, code, str(e), headers, None)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+@app.route("/fetch-url", methods=["POST"])
+@login_required
+def fetch_url():
+    url = request.form.get("url", "").strip()
+    result_status = ""
+    result_content = ""
+
+    if not url:
+        result_content = "请输入 URL"
+    else:
+        try:
+            # SSRF 防护：校验目标
+            _validate_url_target(url)
+
+            # 使用安全的重定向处理器
+            opener = urllib.request.build_opener(_SafeRedirectHandler)
+            resp = opener.open(url, timeout=10)
+            result_status = f"{resp.status} {resp.msg}"
+            raw = resp.read(5000)
+            result_content = raw.decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            result_status = f"{e.code} {e.reason}"
+            try:
+                result_content = e.read(5000).decode("utf-8", errors="replace")
+            except Exception:
+                result_content = str(e)
+        except ValueError as e:
+            result_content = f"请求被拒绝：{e}"
+        except Exception as e:
+            result_content = f"请求失败：{e}"
+
+    uid = session.get("user_id")
+    user_info = _get_user_by_id(uid) if uid else None
+    uname = user_info["username"] if user_info else None
+    return render_template("index.html", username=uname,
+                           user=_get_user_safe(uname) if uname else None,
+                           fetch_url=url, fetch_status=result_status,
+                           fetch_content=result_content)
 
 
 _SSL_CERT = os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.crt")

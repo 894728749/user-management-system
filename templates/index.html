@@ -73,6 +73,24 @@
     </div>
     {% endif %}
 </div>
+
+<div class="card">
+    <h3>URL 抓取</h3>
+    <form method="POST" action="/fetch-url" class="fetch-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="search-row">
+            <input type="text" name="url" placeholder="输入 URL（支持 http:// https:// file://）" value="{{ fetch_url or '' }}" class="search-input" style="flex:1;">
+            <button type="submit" class="btn btn-primary search-btn">抓取</button>
+        </div>
+    </form>
+
+    {% if fetch_content is defined %}
+    <div class="fetch-result" style="margin-top:12px;">
+        <p><strong>状态码：</strong>{{ fetch_status }}</p>
+        <div class="fetch-content-box" style="background:#f5f5f5;padding:12px;border-radius:6px;border:1px solid #ddd;max-height:400px;overflow:auto;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;">{{ fetch_content }}</div>
+    </div>
+    {% endif %}
+</div>
 {% else %}
 <div class="card">
     <h2>请先登录</h2>
