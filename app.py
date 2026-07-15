@@ -836,7 +836,6 @@ _PRIVATE_IP_BLOCKS = [
     ("100.64.0.0", "100.127.255.255"),
 ]
 
-# 特殊内网域名
 _PRIVATE_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
@@ -851,83 +850,110 @@ def _is_private_ip(ip_str):
             if start_num <= ip_num <= end_num:
                 return True
     except Exception:
-        return True  # 解析失败时拒绝
+        return True
     return False
+
+
+# /fetch-url 速率限制：每 IP 每 60 秒最多 10 次
+_FETCH_RATE_DB = os.path.join(_BASE, "logs", "fetch_rate.db")
+
+
+def _check_fetch_rate(ip):
+    cutoff = time.time() - 60
+    try:
+        with sqlite3.connect(_FETCH_RATE_DB) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS fetch_attempts (ip TEXT, timestamp REAL)")
+            conn.execute("DELETE FROM fetch_attempts WHERE timestamp < ?", (cutoff,))
+            cnt = conn.execute(
+                "SELECT COUNT(*) FROM fetch_attempts WHERE ip=? AND timestamp>?",
+                (ip, cutoff),
+            ).fetchone()[0]
+            if cnt >= 10:
+                return False
+            conn.execute("INSERT INTO fetch_attempts (ip, timestamp) VALUES (?,?)", (ip, time.time()))
+            conn.commit()
+        return True
+    except Exception:
+        return True  # 速率限制异常时放行，避免误杀
 
 
 def _validate_url_target(url):
     """SSRF 防护：校验 URL 的目标是否安全"""
+    # CRLF 注入防护
+    for ch in ("\r", "\n"):
+        if ch in url:
+            raise ValueError("请求被拒绝")
+
     parsed = urllib.parse.urlparse(url)
 
     # 1. 协议限制：仅允许 http/https
     if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"不支持的协议: {parsed.scheme}")
+        raise ValueError("请求被拒绝")
 
     # 2. 检查 hostname
     hostname = parsed.hostname.lower()
     if hostname in _PRIVATE_HOSTNAMES:
-        raise ValueError("不允许访问内网地址")
+        raise ValueError("请求被拒绝")
 
-    # 3. DNS 解析并检查 IP（防 DNS rebinding）
+    # 3. 检测 @ 符号后的真实 host（防 http://evil@127.0.0.1 绕过）
+    at_hostname = hostname.split("@")[-1] if "@" in hostname else hostname
+    if at_hostname in _PRIVATE_HOSTNAMES:
+        raise ValueError("请求被拒绝")
+
+    # 4. DNS 解析并检查 IP
     try:
-        ips = socket.getaddrinfo(hostname, 80)
+        ips = socket.getaddrinfo(at_hostname, 80)
         for family, _, _, _, sockaddr in ips:
             ip = sockaddr[0]
+            # IPv4-mapped IPv6 → 提取实际 IPv4
+            if ip.startswith("::ffff:"):
+                ip = ip[7:]
             if _is_private_ip(ip):
-                raise ValueError(f"目标地址 {ip} 为内网地址，已拒绝访问")
+                raise ValueError("请求被拒绝")
     except ValueError:
         raise
     except Exception:
-        raise ValueError("无法解析目标地址")
-
-
-class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """重定向处理器：检查重定向目标是否安全"""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        try:
-            _validate_url_target(newurl)
-        except ValueError as e:
-            raise urllib.error.HTTPError(req.full_url, code, str(e), headers, None)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        raise ValueError("请求被拒绝")
 
 
 @app.route("/fetch-url", methods=["POST"])
 @login_required
 def fetch_url():
     url = request.form.get("url", "").strip()
-    result_status = ""
     result_content = ""
 
     if not url:
-        result_content = "请输入 URL"
+        result_content = "请求失败"
     else:
-        try:
-            # SSRF 防护：校验目标
-            _validate_url_target(url)
+        # 速率限制
+        ip = request.remote_addr or "unknown"
+        if not _check_fetch_rate(ip):
+            result_content = "请求失败"
 
-            # 使用安全的重定向处理器
-            opener = urllib.request.build_opener(_SafeRedirectHandler)
-            resp = opener.open(url, timeout=10)
-            result_status = f"{resp.status} {resp.msg}"
-            raw = resp.read(5000)
-            result_content = raw.decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as e:
-            result_status = f"{e.code} {e.reason}"
+        if not result_content:
             try:
-                result_content = e.read(5000).decode("utf-8", errors="replace")
+                _validate_url_target(url)
+                req = urllib.request.Request(url)
+                # 禁用重定向
+                resp = urllib.request.urlopen(req, timeout=10)
+                result_content = f"{resp.status} OK"
+                raw = resp.read(5000)
+                result_content += "\n" + ("=" * 40) + "\n" + raw.decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as e:
+                result_content = f"{e.code} {e.reason}"
+                try:
+                    result_content += "\n" + ("=" * 40) + "\n" + e.read(5000).decode("utf-8", errors="replace")
+                except Exception:
+                    pass
             except Exception:
-                result_content = str(e)
-        except ValueError as e:
-            result_content = f"请求被拒绝：{e}"
-        except Exception as e:
-            result_content = f"请求失败：{e}"
+                result_content = "请求失败"
 
     uid = session.get("user_id")
     user_info = _get_user_by_id(uid) if uid else None
     uname = user_info["username"] if user_info else None
     return render_template("index.html", username=uname,
                            user=_get_user_safe(uname) if uname else None,
-                           fetch_url=url, fetch_status=result_status,
+                           fetch_url=url, fetch_status=result_content[:100].split(chr(10))[0],
                            fetch_content=result_content)
 
 
