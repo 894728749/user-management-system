@@ -2,7 +2,7 @@
 用户管理系统 - 统一数据源版本
 """
 import os, re, time, secrets, logging, random, string, sqlite3, threading
-import functools, hashlib, uuid, urllib.request, urllib.error, urllib.parse, socket
+import functools, hashlib, uuid, urllib.request, urllib.error, urllib.parse, socket, subprocess, platform
 from decimal import Decimal, ROUND_DOWN
 from io import BytesIO
 from datetime import timedelta, datetime
@@ -955,6 +955,77 @@ def fetch_url():
                            user=_get_user_safe(uname) if uname else None,
                            fetch_url=url, fetch_status=result_content[:100].split(chr(10))[0],
                            fetch_content=result_content)
+
+
+# ===== Ping 网络诊断 =====
+# 命令注入防护：四层防御
+_PING_HOSTNAME_RE = re.compile(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$')
+_PING_IP_RE = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$')
+_PING_RATE_DB = os.path.join(_BASE, "logs", "ping_rate.db")
+
+
+def _is_valid_ping_target(target):
+    """第三层防御：字符白名单 — 仅允许合法IP或域名"""
+    # 检查是否包含 shell 特殊字符
+    if re.search(r'[;&|`\'"$(){}[\]!#~<>\\\n\r]', target):
+        return False
+    # 检查是否为合法 IPv4
+    m = _PING_IP_RE.match(target)
+    if m:
+        for octet in m.groups():
+            if int(octet) > 255:
+                return False
+        return True
+    # 检查是否为合法域名
+    if _PING_HOSTNAME_RE.match(target):
+        return True
+    return False
+
+
+@app.route("/ping", methods=["GET", "POST"])
+@login_required
+def ping():
+    result = ""
+    ping_ip = ""
+    if request.method == "POST":
+        # 第一层防御：CSRF 校验
+        if not _check_csrf(request.form.get("csrf_token", "")):
+            result = "安全验证失败"
+
+        ip = request.form.get("ip", "").strip()
+        ping_ip = ip
+
+        if not result and ip:
+            # 第三层防御：字符白名单
+            if not _is_valid_ping_target(ip):
+                result = "无效的 IP 地址或域名"
+
+            if not result:
+                # 第二层防御：使用列表参数，不使用 shell=True
+                # 第四层防御：DNS 解析检查（防SSRF变体）
+                try:
+                    socket.getaddrinfo(ip, 80)
+                except Exception:
+                    result = "无法解析目标地址"
+
+            if not result:
+                try:
+                    result = subprocess.check_output(
+                        ["ping", "-c", "3", ip],
+                        timeout=30, stderr=subprocess.STDOUT
+                    )
+                    result = result.decode("utf-8", errors="replace")
+                except subprocess.CalledProcessError as e:
+                    result = e.output.decode("utf-8", errors="replace") if e.output else f"Ping 失败，返回码: {e.returncode}"
+                except Exception as e:
+                    result = f"Ping 执行错误"
+
+    uid = session.get("user_id")
+    user_info = _get_user_by_id(uid) if uid else None
+    uname = user_info["username"] if user_info else None
+    return render_template("ping.html", username=uname,
+                           user=_get_user_safe(uname) if uname else None,
+                           ping_result=result, ping_ip=ping_ip)
 
 
 _SSL_CERT = os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.crt")
