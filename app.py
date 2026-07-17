@@ -48,13 +48,24 @@ def add_security_headers(response):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; style-src 'self'; script-src 'self'; "
-        "img-src 'self' data:; form-action 'self'"
+        "img-src 'self' data:; form-action 'self'; "
+        "object-src 'none'; frame-src 'none'; base-uri 'self'"
     )
     if response.status_code == 200 and "text/html" in response.content_type:
         response.headers["Cache-Control"] = "no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
+
+
+# ===== 全局异常处理 =====
+@app.errorhandler(404)
+def not_found(e):
+    return "404 页面不存在", 404
+
+@app.errorhandler(500)
+def server_error(e):
+    return "服务器内部错误", 500
 
 
 # ===== 审计日志 =====
@@ -366,15 +377,18 @@ _SAFE_ATTR_WHITELIST = {"class", "id", "style", "href", "src", "alt", "title",
 
 def _sanitize_html(html_text):
     """移除 HTML 中的危险标签和属性，防止 XSS"""
-    # 移除 <script> 及其内容
+    # 移除 <script> 及其内容（含注释/换行绕过）
     html_text = re.sub(r'<script[^>]*>.*?</script>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
-    # 移除 </?script>
     html_text = re.sub(r'</?script[^>]*>', '', html_text, flags=re.IGNORECASE)
-    # 移除 on* 事件处理器属性（如 onclick, onload, onerror）
+    # 移除 <iframe> <frame> <embed> <object> <svg> <meta http-equiv>
+    html_text = re.sub(r'</?(iframe|frame|embed|object|svg|meta)[^>]*>', '', html_text, flags=re.IGNORECASE)
+    # 移除 on* 事件处理器（含 SVG 事件）
     html_text = re.sub(r'\s+on\w+\s*=\s*["\'][^"\']*["\']', '', html_text, flags=re.IGNORECASE)
-    # 移除 javascript: 伪协议
-    html_text = re.sub(r'href\s*=\s*["\']\s*javascript\s*:', 'href="#', html_text, flags=re.IGNORECASE)
-    html_text = re.sub(r'src\s*=\s*["\']\s*javascript\s*:', 'src="#', html_text, flags=re.IGNORECASE)
+    # 移除 javascript: / data: / vbscript: 伪协议
+    html_text = re.sub(r'\s*(href|src|action|formaction|xlink:href)\s*=\s*["\']\s*(j\s*a\s*v\s*a|d\s*a\s*t\s*a|v\s*b\s*s|javascript|data|vbscript)\s*:',
+                       ' \\1="#', html_text, flags=re.IGNORECASE | re.DOTALL)
+    # 移除外链 form action
+    html_text = re.sub(r'<form[^>]*action\s*=\s*["\'](?!["\'])[^"\']*["\']', '<form', html_text, flags=re.IGNORECASE)
     return html_text
 
 
@@ -445,6 +459,7 @@ def login():
 
         if user and check_password_hash(user["password_hash"], password):
             session.clear()
+            session["_csrf"] = secrets.token_hex(32)
             session["user_id"] = user["id"]
             session["username"] = user["username"]
             session.permanent = True
@@ -494,6 +509,13 @@ def recharge():
 
     uid = session.get("user_id")
     amount_str = request.form.get("amount", "").strip()
+
+    # 速率限制：每用户每10秒最多1次充值
+    last_recharge = session.get("_last_recharge", 0)
+    now = time.time()
+    if now - last_recharge < 3:
+        return redirect("/profile?error=操作过于频繁")
+    session["_last_recharge"] = now
 
     # 金额校验
     try:
@@ -573,6 +595,20 @@ def register():
         password = request.form.get("password", "")
         email = request.form.get("email", "").strip()
         phone = request.form.get("phone", "").strip()
+
+        # 输入校验
+        if not username or not password:
+            return render_template("register.html", error="用户名和密码不能为空"), 400
+        if len(username) < 3 or len(username) > 20:
+            return render_template("register.html", error="用户名长度需3~20个字符"), 400
+        if not re.match(r'^[a-zA-Z0-9_一-鿿]+$', username):
+            return render_template("register.html", error="用户名包含非法字符"), 400
+        if len(password) < 6:
+            return render_template("register.html", error="密码长度至少6位"), 400
+        if email and not re.match(r'^[^@]+@[^@]+\.[^@]+$', email):
+            return render_template("register.html", error="邮箱格式不正确"), 400
+        if phone and not re.match(r'^1\d{10}$', phone):
+            return render_template("register.html", error="手机号格式不正确（11位）"), 400
 
         pw_hash = generate_password_hash(password)
         try:
@@ -670,9 +706,14 @@ def upload_file():
         img = Image.open(file)
         img.save(save_path)
 
-        # 记录到数据库
+        # 记录到数据库（删除旧文件保留新文件）
         with _get_conn() as conn:
-            conn.execute("DELETE FROM uploads WHERE user_id=?", (uid,))
+            old = conn.execute("SELECT filename FROM uploads WHERE user_id=?", (uid,)).fetchone()
+            if old:
+                old_path = os.path.join(_UPLOAD_DIR, old["filename"])
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+                conn.execute("DELETE FROM uploads WHERE user_id=?", (uid,))
             conn.execute(
                 "INSERT INTO uploads (user_id, filename, original_name) VALUES (?,?,?)",
                 (uid, new_name, file.filename)
@@ -795,8 +836,8 @@ def change_password():
     if not username or not new_password:
         return redirect("/profile?error=用户名和密码不能为空")
 
-    if len(new_password) < 4:
-        return redirect("/profile?error=密码长度至少4位")
+    if len(new_password) < 6:
+        return redirect("/profile?error=密码长度至少6位")
 
     # 验证原密码
     with _get_conn() as conn:
@@ -981,11 +1022,34 @@ def _is_valid_ping_target(target):
         for octet in m.groups():
             if int(octet) > 255:
                 return False
+        # 额外检查：排除内网IP（复用SSRF防护逻辑）
+        if _is_private_ip(target):
+            return False
         return True
     # 检查是否为合法域名
     if _PING_HOSTNAME_RE.match(target):
         return True
     return False
+
+
+def _check_ping_rate(ip):
+    """Ping 速率限制：每 IP 每 60 秒最多 10 次"""
+    cutoff = time.time() - 60
+    try:
+        with sqlite3.connect(_PING_RATE_DB) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS ping_attempts (ip TEXT, timestamp REAL)")
+            conn.execute("DELETE FROM ping_attempts WHERE timestamp < ?", (cutoff,))
+            cnt = conn.execute(
+                "SELECT COUNT(*) FROM ping_attempts WHERE ip=? AND timestamp>?",
+                (ip, cutoff),
+            ).fetchone()[0]
+            if cnt >= 10:
+                return False
+            conn.execute("INSERT INTO ping_attempts (ip, timestamp) VALUES (?,?)", (ip, time.time()))
+            conn.commit()
+        return True
+    except Exception:
+        return True
 
 
 @app.route("/ping", methods=["GET", "POST"])
@@ -999,6 +1063,10 @@ def ping():
             result = "安全验证失败"
 
         ip = request.form.get("ip", "").strip()
+
+        # 速率限制
+        if not result and ip and not _check_ping_rate(request.remote_addr or "unknown"):
+            result = "请求过于频繁，请稍后再试"
         ping_ip = ip
 
         if not result and ip:
