@@ -1122,13 +1122,12 @@ def xml_import():
             result_json = json.dumps({"error": "XML 数据不能为空"}, ensure_ascii=False, indent=2)
         else:
             try:
-                # XXE 防护：移除 DOCTYPE 和 ENTITY 定义
-                xml_data = re.sub(r'<!DOCTYPE[^>]*>', '', xml_data, flags=re.DOTALL | re.IGNORECASE)
-                # 清理残留的 ]> 和实体声明
-                xml_data = re.sub(r'\s*\[.*?\]\s*>', '', xml_data, flags=re.DOTALL)
-                xml_data = re.sub(r'<!ENTITY\s+\S+\s+SYSTEM\s+"[^"]*">', '', xml_data, flags=re.IGNORECASE)
-                # 移除实体引用 &xxe; 等
-                xml_data = re.sub(r'&(\w+);', '', xml_data)
+                # XXE 防护：移除 DOCTYPE、ENTITY 定义和实体引用
+                xml_data = re.sub(r'<!DOCTYPE\s+\w+\s*\[.*?\]\s*>', '', xml_data, flags=re.DOTALL | re.IGNORECASE)
+                xml_data = re.sub(r'<!DOCTYPE\s+\w+\s*(SYSTEM|PUBLIC)\s+"[^"]*"\s*>', '', xml_data, flags=re.DOTALL | re.IGNORECASE)
+                xml_data = re.sub(r'<!ENTITY\s+%\s*\w+[^>]*>', '', xml_data, flags=re.DOTALL | re.IGNORECASE)
+                xml_data = re.sub(r'<!ENTITY\s+\w+[^>]*>', '', xml_data, flags=re.DOTALL | re.IGNORECASE)
+                xml_data = re.sub(r'[&%]\w+;', '', xml_data)
 
                 root = ET.fromstring(xml_data)
                 users = []
