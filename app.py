@@ -356,9 +356,6 @@ def _inject_captcha():
     return dict(need_captcha=_need_captcha(ip, uname))
 
 
-import re
-
-
 # ===== HTML 消毒：允许基础标签，移除 XSS 向量 =====
 _SAFE_TAG_WHITELIST = {"html", "head", "meta", "style", "div", "h1", "h2", "h3",
                        "p", "ul", "ol", "li", "strong", "em", "code", "span",
@@ -919,6 +916,15 @@ def _validate_url_target(url):
 @app.route("/fetch-url", methods=["POST"])
 @login_required
 def fetch_url():
+    if not _check_csrf(request.form.get("csrf_token", "")):
+        result_content = "安全验证失败"
+        uid = session.get("user_id")
+        user_info = _get_user_by_id(uid) if uid else None
+        uname = user_info["username"] if user_info else None
+        return render_template("index.html", username=uname,
+                               user=_get_user_safe(uname) if uname else None,
+                               fetch_url="", fetch_status="", fetch_content=result_content)
+
     url = request.form.get("url", "").strip()
     result_content = ""
 
