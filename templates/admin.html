@@ -14,6 +14,9 @@
 
     <a href="/admin/orders" class="btn btn-primary btn-inline">充值记录</a>
     <a href="/" class="btn btn-primary btn-inline">返回首页</a>
-    <a href="/logout" class="btn btn-danger btn-inline">退出登录</a>
+    <form method="POST" action="/logout" style="display:inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-danger btn-inline">退出登录</button>
+    </form>
 </div>
 {% endblock %}

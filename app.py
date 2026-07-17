@@ -3,6 +3,7 @@
 """
 import os, re, time, secrets, logging, random, string, sqlite3, threading
 import functools, hashlib, uuid, urllib.request, urllib.error, urllib.parse, socket, subprocess, platform
+import json, xml.etree.ElementTree as ET
 from decimal import Decimal, ROUND_DOWN
 from io import BytesIO
 from datetime import timedelta, datetime
@@ -1102,6 +1103,53 @@ def ping():
     return render_template("ping.html", username=uname,
                            user=_get_user_safe(uname) if uname else None,
                            ping_result=result, ping_ip=ping_ip)
+
+
+# ===== XML 数据导入 =====
+@app.route("/xml-import", methods=["GET", "POST"])
+@login_required
+def xml_import():
+    uid = session.get("user_id")
+    user_info = _get_user_by_id(uid) if uid else None
+    uname = user_info["username"] if user_info else None
+    user_ctx = dict(username=uname, user=_get_user_safe(uname) if uname else None)
+    result_json = ""
+
+    if request.method == "POST":
+        xml_data = request.form.get("xml_data", "").strip()
+
+        if not xml_data:
+            result_json = json.dumps({"error": "XML 数据不能为空"}, ensure_ascii=False, indent=2)
+        else:
+            try:
+                # XXE 防护：移除 DOCTYPE 和 ENTITY 定义
+                xml_data = re.sub(r'<!DOCTYPE[^>]*>', '', xml_data, flags=re.DOTALL | re.IGNORECASE)
+                # 清理残留的 ]> 和实体声明
+                xml_data = re.sub(r'\s*\[.*?\]\s*>', '', xml_data, flags=re.DOTALL)
+                xml_data = re.sub(r'<!ENTITY\s+\S+\s+SYSTEM\s+"[^"]*">', '', xml_data, flags=re.IGNORECASE)
+                # 移除实体引用 &xxe; 等
+                xml_data = re.sub(r'&(\w+);', '', xml_data)
+
+                root = ET.fromstring(xml_data)
+                users = []
+                for user in root.findall("user"):
+                    name = user.findtext("name", "")
+                    email = user.findtext("email", "")
+                    users.append({"name": name, "email": email})
+
+                if users:
+                    result_json = json.dumps({"users": users}, ensure_ascii=False, indent=2)
+                else:
+                    result_json = json.dumps({"error": "未找到 user 节点"}, ensure_ascii=False, indent=2)
+
+            except ET.ParseError as e:
+                result_json = json.dumps({"error": "XML 解析失败"}, ensure_ascii=False, indent=2)
+            except Exception as e:
+                result_json = json.dumps({"error": "处理失败"}, ensure_ascii=False, indent=2)
+
+    return render_template("xml_import.html", xml_result=result_json, **user_ctx)
+
+    return render_template("xml_import.html", xml_result=result_json, **user_ctx)
 
 
 _SSL_CERT = os.environ.get("SSL_CERT", os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.crt"))

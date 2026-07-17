@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h2>XML 数据导入</h2>
+    <p>输入 XML 数据，解析 user 节点中的 name 和 email 信息</p>
+    <form method="POST" action="/xml-import" class="xml-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-group">
+            <label for="xml_data">XML 数据</label>
+            <textarea id="xml_data" name="xml_data" rows="15" class="search-input" style="width:100%;font-family:'Courier New',monospace;font-size:13px;resize:vertical;" placeholder="输入 XML 数据..."></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary">导入</button>
+    </form>
+
+    {% if xml_result %}
+    <div class="xml-result" style="margin-top:16px;">
+        <h3>解析结果</h3>
+        <pre style="background:#1a1a2e;color:#00ff00;padding:16px;border-radius:8px;font-family:'Courier New',monospace;font-size:13px;line-height:1.5;overflow:auto;max-height:400px;white-space:pre-wrap;">{{ xml_result }}</pre>
+    </div>
+    {% endif %}
+
+    <div class="xml-example" style="margin-top:16px;padding:12px;background:#f8f9fa;border-radius:6px;border:1px solid #dee2e6;">
+        <h4 style="margin:0 0 8px 0;">示例 XML</h4>
+        <pre style="font-family:'Courier New',monospace;font-size:12px;margin:0;color:#333;">&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;users&gt;
+    &lt;user&gt;
+        &lt;name&gt;张三&lt;/name&gt;
+        &lt;email&gt;zhangsan@example.com&lt;/email&gt;
+    &lt;/user&gt;
+    &lt;user&gt;
+        &lt;name&gt;李四&lt;/name&gt;
+        &lt;email&gt;lisi@example.com&lt;/email&gt;
+    &lt;/user&gt;
+&lt;/users&gt;</pre>
+    </div>
+
+    <div style="margin-top:16px;">
+        <a href="/" class="btn btn-primary btn-inline">返回首页</a>
+    </div>
+</div>
+{% endblock %}
