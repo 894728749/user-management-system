@@ -159,8 +159,10 @@ def _migrate():
             print("[MIGRATE] 旧密码已转换为 password_hash")
 
         # 3. 确保默认用户存在并拥有正确角色
-        admin_hash = generate_password_hash("admin123")
-        alice_hash = generate_password_hash("alice2025")
+        _default_admin_pwd = os.environ.get("ADMIN_PASSWORD", "admin123")
+        _default_alice_pwd = os.environ.get("ALICE_PASSWORD", "alice2025")
+        admin_hash = generate_password_hash(_default_admin_pwd)
+        alice_hash = generate_password_hash(_default_alice_pwd)
         conn.execute("""INSERT OR IGNORE INTO users
             (username, password_hash, role, email, phone, balance_cents)
             VALUES (?, ?, ?, ?, ?, ?)""",
@@ -289,7 +291,7 @@ def _clear_rate(ip, username):
 
 # ===== 验证码 =====
 _CAPTCHA_FAIL_THRESHOLD = 3
-_CAPTCHA_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+_CAPTCHA_FONT = os.environ.get("CAPTCHA_FONT", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf")
 
 
 def _captcha_fail_count(ip, username):
@@ -1102,16 +1104,22 @@ def ping():
                            ping_result=result, ping_ip=ping_ip)
 
 
-_SSL_CERT = os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.crt")
-_SSL_KEY = os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.key")
+_SSL_CERT = os.environ.get("SSL_CERT", os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.crt"))
+_SSL_KEY = os.environ.get("SSL_KEY", os.path.join(os.sep, "etc", "ssl", "user-manager", "ssl.key"))
 
 
 if __name__ == "__main__":
+    _PORT = int(os.environ.get("PORT", 5000))
     print("=" * 60)
     print("  用户管理系统 — 已启动")
-    print(f"  🔗 https://192.168.184.131:5000")
+    import socket as _s
+    try:
+        _host_ip = _s.gethostbyname(_s.gethostname())
+    except Exception:
+        _host_ip = "127.0.0.1"
+    print(f"  🔗 https://{_host_ip}:{_PORT}")
     print("=" * 60)
     from werkzeug.serving import WSGIRequestHandler
     WSGIRequestHandler.server_version = "Web Server"
     WSGIRequestHandler.sys_version = ""
-    app.run(host="0.0.0.0", port=5000, ssl_context=(_SSL_CERT, _SSL_KEY))
+    app.run(host="0.0.0.0", port=_PORT, ssl_context=(_SSL_CERT, _SSL_KEY))
